@@ -1,0 +1,10 @@
+{
+  "id": "nafnet-denoise",
+  "name": "NAFNet Denoise",
+  "publisher": "Megvii Research",
+  "description": "Real-world image denoising using NAFNet-width32 trained on SIDD",
+  "adapter": "nafnet",
+  "file": "nafnet_denoise.onnx",
+  "tileSize": 512,
+  "tileOverlap": 32
+}

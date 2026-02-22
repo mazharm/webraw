@@ -1,0 +1,8 @@
+{
+  "id": "hdrnet-enhance",
+  "name": "HDRNet Enhance",
+  "publisher": "Google Research",
+  "description": "Real-time image enhancement using deep bilateral learning",
+  "adapter": "hdrnet",
+  "file": "hdrnet_enhance.onnx"
+}

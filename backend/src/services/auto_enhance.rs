@@ -19,8 +19,9 @@ use crate::models::error::AppError;
 // ---------------------------------------------------------------------------
 
 pub struct RunContext {
-    pub api_key: Option<String>,
-    pub anthropic_key: Option<String>,
+    pub api_key: Option<String>,        // Gemini
+    pub anthropic_key: Option<String>,  // Claude
+    pub openai_key: Option<String>,     // OpenAI
     pub config: Arc<AppConfig>,
 }
 
@@ -53,6 +54,8 @@ impl AutoEnhanceService {
         let mut models: Vec<Arc<dyn EnhanceModel>> = vec![
             Arc::new(BuiltinAutoFix),
             Arc::new(ClaudeAutoFix),
+            Arc::new(GeminiAutoFix),
+            Arc::new(OpenAiAutoFix),
         ];
 
         // Scan for model manifest JSON files and load ONNX models
@@ -433,21 +436,7 @@ impl EnhanceModel for ClaudeAutoFix {
         let claude_model = &ctx.config.claude_model;
         let url = "https://api.anthropic.com/v1/messages";
 
-        let prompt = r#"Analyze this photograph and recommend optimal development parameters.
-Return ONLY a JSON object with numeric values for these keys:
-- exposure (-5 to 5, EV stops)
-- contrast (-100 to 100)
-- highlights (-100 to 100)
-- shadows (-100 to 100)
-- whites (-100 to 100)
-- blacks (-100 to 100)
-- temperature (2000 to 50000, Kelvin)
-- tint (-150 to 150)
-- vibrance (-100 to 100)
-- saturation (-100 to 100)
-- clarity (-100 to 100)
-- dehaze (-100 to 100)
-- texture (-100 to 100)"#;
+        let prompt = ANALYSIS_PROMPT;
 
         let body = serde_json::json!({
             "model": claude_model,
@@ -515,16 +504,7 @@ Return ONLY a JSON object with numeric values for these keys:
                 AppError::AutoEnhanceError("No text in Claude response".to_string())
             })?;
 
-        // Strip markdown code fences if present
-        let json_str = text
-            .trim()
-            .strip_prefix("```json")
-            .or_else(|| text.trim().strip_prefix("```"))
-            .unwrap_or(text)
-            .trim()
-            .strip_suffix("```")
-            .unwrap_or(text)
-            .trim();
+        let json_str = strip_markdown_fences(text);
 
         let parsed: HashMap<String, f64> = serde_json::from_str(json_str).map_err(|e| {
             AppError::AutoEnhanceError(format!(
@@ -535,6 +515,289 @@ Return ONLY a JSON object with numeric values for these keys:
 
         Ok(EnhanceResult::Parameters { values: parsed })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini AI model: sends image to Google Generative Language API with vision
+// ---------------------------------------------------------------------------
+
+struct GeminiAutoFix;
+
+#[async_trait]
+impl EnhanceModel for GeminiAutoFix {
+    fn descriptor(&self) -> ModelDescriptor {
+        ModelDescriptor {
+            id: "gemini".to_string(),
+            name: "Gemini AI".to_string(),
+            description: "AI-powered analysis using Gemini vision — requires API key"
+                .to_string(),
+            kind: EnhanceModelKind::ParameterPredictor,
+            version: "1.0.0".to_string(),
+            builtin: false,
+            requires_api_key: true,
+            publisher: Some("Google".to_string()),
+        }
+    }
+
+    fn requires_api_key(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        &self,
+        img: &DynamicImage,
+        _stats: &ImageStats,
+        ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError> {
+        let api_key = ctx
+            .api_key
+            .as_deref()
+            .ok_or(AppError::AiInvalidKey)?;
+
+        // Encode image as JPEG base64
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to encode proxy JPEG: {}", e)))?;
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            jpeg_buf.into_inner(),
+        );
+
+        let gemini_model = &ctx.config.gemini_model;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            gemini_model, api_key
+        );
+
+        let prompt = ANALYSIS_PROMPT;
+
+        let body = serde_json::json!({
+            "contents": [{
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": b64
+                        }
+                    },
+                    {
+                        "text": prompt
+                    }
+                ]
+            }]
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("Gemini request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                return Err(AppError::AiInvalidKey);
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(AppError::AiQuotaExceeded);
+            }
+            return Err(AppError::AutoEnhanceError(format!(
+                "Gemini API error {}: {}",
+                status, text
+            )));
+        }
+
+        let resp_json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to parse Gemini response: {}", e)))?;
+
+        // Extract text from candidates[0].content.parts[0].text
+        let text = resp_json
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AppError::AutoEnhanceError("No text in Gemini response".to_string())
+            })?;
+
+        let json_str = strip_markdown_fences(text);
+
+        let parsed: HashMap<String, f64> = serde_json::from_str(json_str).map_err(|e| {
+            AppError::AutoEnhanceError(format!(
+                "Failed to parse Gemini JSON: {} — raw: {}",
+                e, text
+            ))
+        })?;
+
+        Ok(EnhanceResult::Parameters { values: parsed })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI GPT-4o model: sends image to OpenAI Chat Completions API with vision
+// ---------------------------------------------------------------------------
+
+struct OpenAiAutoFix;
+
+#[async_trait]
+impl EnhanceModel for OpenAiAutoFix {
+    fn descriptor(&self) -> ModelDescriptor {
+        ModelDescriptor {
+            id: "openai".to_string(),
+            name: "OpenAI GPT-4o".to_string(),
+            description: "AI-powered analysis using GPT-4o vision — requires API key"
+                .to_string(),
+            kind: EnhanceModelKind::ParameterPredictor,
+            version: "1.0.0".to_string(),
+            builtin: false,
+            requires_api_key: true,
+            publisher: Some("OpenAI".to_string()),
+        }
+    }
+
+    fn requires_api_key(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        &self,
+        img: &DynamicImage,
+        _stats: &ImageStats,
+        ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError> {
+        let api_key = ctx
+            .openai_key
+            .as_deref()
+            .ok_or(AppError::AiInvalidKey)?;
+
+        // Encode image as JPEG base64
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to encode proxy JPEG: {}", e)))?;
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            jpeg_buf.into_inner(),
+        );
+
+        let openai_model = &ctx.config.openai_model;
+        let url = "https://api.openai.com/v1/chat/completions";
+
+        let prompt = ANALYSIS_PROMPT;
+
+        let body = serde_json::json!({
+            "model": openai_model,
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:image/jpeg;base64,{}", b64)
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }]
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("OpenAI request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                return Err(AppError::AiInvalidKey);
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(AppError::AiQuotaExceeded);
+            }
+            return Err(AppError::AutoEnhanceError(format!(
+                "OpenAI API error {}: {}",
+                status, text
+            )));
+        }
+
+        let resp_json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to parse OpenAI response: {}", e)))?;
+
+        // Extract text from choices[0].message.content
+        let text = resp_json
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AppError::AutoEnhanceError("No text in OpenAI response".to_string())
+            })?;
+
+        let json_str = strip_markdown_fences(text);
+
+        let parsed: HashMap<String, f64> = serde_json::from_str(json_str).map_err(|e| {
+            AppError::AutoEnhanceError(format!(
+                "Failed to parse OpenAI JSON: {} — raw: {}",
+                e, text
+            ))
+        })?;
+
+        Ok(EnhanceResult::Parameters { values: parsed })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared prompt and helpers for AI providers
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_PROMPT: &str = r#"Analyze this photograph and recommend optimal development parameters.
+Return ONLY a JSON object with numeric values for these keys:
+- exposure (-5 to 5, EV stops)
+- contrast (-100 to 100)
+- highlights (-100 to 100)
+- shadows (-100 to 100)
+- whites (-100 to 100)
+- blacks (-100 to 100)
+- temperature (2000 to 50000, Kelvin)
+- tint (-150 to 150)
+- vibrance (-100 to 100)
+- saturation (-100 to 100)
+- clarity (-100 to 100)
+- dehaze (-100 to 100)
+- texture (-100 to 100)"#;
+
+fn strip_markdown_fences(text: &str) -> &str {
+    let s = text.trim();
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
+    let s = s.trim();
+    let s = s.strip_suffix("```").unwrap_or(s);
+    s.trim()
 }
 
 fn round2(v: f64) -> f64 {

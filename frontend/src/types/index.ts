@@ -177,7 +177,7 @@ export interface LocalAdjustment {
 }
 
 export interface AiLayerMeta {
-  provider: 'gemini';
+  provider: 'gemini' | 'openai' | 'google-imagen';
   model: string;
   prompt?: string;
   negativePrompt?: string;
@@ -252,7 +252,7 @@ export interface HistogramData {
 }
 
 export type JobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETE' | 'FAILED';
-export type JobKind = 'PREVIEW' | 'EXPORT' | 'AI_EDIT' | 'AUTO_ENHANCE';
+export type JobKind = 'PREVIEW' | 'EXPORT' | 'AI_EDIT' | 'AUTO_ENHANCE' | 'OPTIMIZE';
 
 export interface JobInfo {
   jobId: string;
@@ -314,4 +314,24 @@ export interface FilmSimLook {
     grainSize: number;
     saturation: number;
   };
+}
+
+// Optimize types
+export interface OptimizeModelStatus {
+  id: string;
+  name: string;
+  available: boolean;
+  fileSizeMb?: number;
+}
+
+export interface OptimizeMasksSummary {
+  subject: boolean;
+  sky: boolean;
+  skin: boolean;
+}
+
+export interface OptimizeResultData {
+  resultFileId: string;
+  appliedParams: Record<string, number>;
+  masks: OptimizeMasksSummary;
 }

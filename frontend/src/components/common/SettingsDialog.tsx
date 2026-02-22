@@ -24,12 +24,14 @@ export function SettingsDialog({ onDismiss }: Props) {
   const {
     geminiApiKey,
     anthropicApiKey,
+    openaiApiKey,
     keyMode,
     redactPrompts,
     colorSpace,
     stripLocationOnExport,
     setGeminiApiKey,
     setAnthropicApiKey,
+    setOpenaiApiKey,
     setKeyMode,
     setRedactPrompts,
     setColorSpace,
@@ -38,10 +40,12 @@ export function SettingsDialog({ onDismiss }: Props) {
 
   const [keyInput, setKeyInput] = useState(geminiApiKey ?? '');
   const [anthropicKeyInput, setAnthropicKeyInput] = useState(anthropicApiKey ?? '');
+  const [openaiKeyInput, setOpenaiKeyInput] = useState(openaiApiKey ?? '');
 
   const handleSaveKeys = () => {
     setGeminiApiKey(keyInput || null);
     setAnthropicApiKey(anthropicKeyInput || null);
+    setOpenaiApiKey(openaiKeyInput || null);
   };
 
   return (
@@ -61,6 +65,16 @@ export function SettingsDialog({ onDismiss }: Props) {
                 />
               </Field>
 
+              <Field label="OpenAI API Key">
+                <Input
+                  type="password"
+                  value={openaiKeyInput}
+                  onChange={(_, data) => setOpenaiKeyInput(data.value)}
+                  placeholder="Enter your OpenAI API key"
+                  style={{ width: '100%' }}
+                />
+              </Field>
+
               <Field label="Gemini API Key">
                 <Input
                   type="password"
@@ -76,8 +90,8 @@ export function SettingsDialog({ onDismiss }: Props) {
                   value={keyMode}
                   onChange={(_, data) => setKeyMode(data.value as 'session' | 'remember')}
                 >
-                  <option value="session">Session only (not persisted)</option>
-                  <option value="remember">Remember (encrypted)</option>
+                  <option value="session">Session only (cleared on refresh)</option>
+                  <option value="remember">Remember locally (localStorage)</option>
                 </Select>
               </Field>
 

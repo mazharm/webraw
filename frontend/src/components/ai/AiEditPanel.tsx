@@ -18,6 +18,7 @@ import { useState, useCallback } from 'react';
 import type { AiLayer } from '../../types';
 
 type AiMode = 'edit' | 'remove' | 'replace_bg' | 'relight' | 'expand';
+type AiProvider = 'gemini' | 'openai' | 'google-imagen';
 
 export function AiEditPanel() {
   const editState = useEditStore(s => s.editState);
@@ -26,16 +27,21 @@ export function AiEditPanel() {
   const updateAiLayer = useEditStore(s => s.updateAiLayer);
   const pushHistory = useEditStore(s => s.pushHistory);
   const geminiApiKey = useSettingsStore(s => s.geminiApiKey);
+  const openaiApiKey = useSettingsStore(s => s.openaiApiKey);
   const activeAsset = useLibraryStore(s => s.assets.find(a => a.id === s.activeAssetId));
 
   const [prompt, setPrompt] = useState('');
   const [mode, setMode] = useState<AiMode>('edit');
+  const [provider, setProvider] = useState<AiProvider>('gemini');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
 
+  // Resolve the API key based on provider
+  const activeApiKey = provider === 'openai' ? openaiApiKey : geminiApiKey;
+
   const handleSubmit = useCallback(async () => {
-    if (!editState || !activeAsset?.fileId || !geminiApiKey || !prompt.trim()) return;
+    if (!editState || !activeAsset?.fileId || !activeApiKey || !prompt.trim()) return;
 
     setIsSubmitting(true);
     setError(null);
@@ -47,7 +53,8 @@ export function AiEditPanel() {
         editState,
         prompt,
         mode,
-        geminiApiKey,
+        activeApiKey,
+        { provider },
       );
 
       const result = await pollJob(jobId, setProgress);
@@ -67,7 +74,7 @@ export function AiEditPanel() {
           opacity: 1.0,
           blendMode: 'NORMAL',
           meta: {
-            provider: 'gemini',
+            provider: meta?.provider ?? provider,
             model: meta?.model ?? 'unknown',
             prompt,
             createdAt: new Date().toISOString(),
@@ -83,19 +90,33 @@ export function AiEditPanel() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [editState, activeAsset, geminiApiKey, prompt, mode, addAiLayer, pushHistory]);
+  }, [editState, activeAsset, activeApiKey, prompt, mode, provider, addAiLayer, pushHistory]);
 
   if (!editState) return null;
 
   return (
     <PanelSection title="AI Edit">
-      {!geminiApiKey && (
+      {!activeApiKey && (
         <MessageBar intent="warning" style={{ marginBottom: 8 }}>
           <MessageBarBody>
-            Set your Gemini API key in Settings to enable AI features.
+            Set your {provider === 'openai' ? 'OpenAI' : 'Gemini'} API key in Settings to enable AI features.
           </MessageBarBody>
         </MessageBar>
       )}
+
+      <Text size={200} weight="semibold" style={{ display: 'block', marginBottom: 4, color: tokens.colorNeutralForeground3 }}>
+        Creative / Generative
+      </Text>
+      <Select
+        size="small"
+        value={provider}
+        onChange={(_, data) => setProvider(data.value as AiProvider)}
+        style={{ marginBottom: 8, width: '100%' }}
+      >
+        <option value="gemini">Gemini</option>
+        <option value="openai">OpenAI gpt-image-1</option>
+        <option value="google-imagen">Google Imagen 3.0</option>
+      </Select>
 
       <Select
         size="small"
@@ -120,7 +141,7 @@ export function AiEditPanel() {
         }
         value={prompt}
         onChange={(_, data) => setPrompt(data.value)}
-        disabled={isSubmitting || !geminiApiKey}
+        disabled={isSubmitting || !activeApiKey}
         style={{ width: '100%', marginBottom: 8 }}
       />
 
@@ -128,7 +149,7 @@ export function AiEditPanel() {
         appearance="primary"
         size="small"
         onClick={handleSubmit}
-        disabled={isSubmitting || !geminiApiKey || !prompt.trim()}
+        disabled={isSubmitting || !activeApiKey || !prompt.trim()}
         style={{ width: '100%', marginBottom: 8 }}
       >
         {isSubmitting ? <Spinner size="tiny" /> : 'Run AI Edit'}

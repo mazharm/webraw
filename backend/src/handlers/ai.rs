@@ -20,6 +20,7 @@ pub struct AiEditRequest {
     pub prompt: String,
     pub negative_prompt: Option<String>,
     pub mode: String,
+    pub provider: Option<String>,
     pub options: Option<serde_json::Value>,
 }
 
@@ -41,10 +42,22 @@ pub async fn create_ai_edit(
         return Err(AppError::RateLimited { retry_after });
     }
 
-    let api_key = headers
-        .get("X-Gemini-Key")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(AppError::AiInvalidKey)?;
+    let provider = req.provider.as_deref().unwrap_or("gemini");
+
+    // Route API key header based on provider
+    let api_key = match provider {
+        "openai" => headers
+            .get("X-OpenAI-Key")
+            .and_then(|v| v.to_str().ok()),
+        "google-imagen" => headers
+            .get("X-Gemini-Key")
+            .and_then(|v| v.to_str().ok()),
+        _ => headers
+            .get("X-Gemini-Key")
+            .and_then(|v| v.to_str().ok()),
+    };
+
+    let api_key = api_key.ok_or(AppError::AiInvalidKey)?;
 
     if api_key.is_empty() {
         return Err(AppError::AiInvalidKey);
@@ -73,6 +86,7 @@ pub async fn create_ai_edit(
     let prompt = req.prompt.clone();
     let mode = req.mode.clone();
     let options = req.options.clone();
+    let provider_str = req.provider.clone();
     let jid = job_id.clone();
 
     tokio::spawn(async move {
@@ -96,6 +110,7 @@ pub async fn create_ai_edit(
                     &prompt,
                     &mode,
                     options.as_ref(),
+                    provider_str.as_deref(),
                 ).await {
                     Ok(ai_result) => {
                         // Store the result image in cache
@@ -109,8 +124,9 @@ pub async fn create_ai_edit(
                                 prompt_hash.update(prompt.as_bytes());
                                 let prompt_hash = hex::encode(prompt_hash.finalize());
 
+                                let actual_provider = provider_str.as_deref().unwrap_or("gemini");
                                 let meta = serde_json::json!({
-                                    "provider": "gemini",
+                                    "provider": actual_provider,
                                     "model": ai_result.model,
                                     "prompt": prompt,
                                     "promptHash": prompt_hash,

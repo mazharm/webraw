@@ -1,0 +1,10 @@
+{
+  "id": "restormer-denoise",
+  "name": "Restormer Denoise",
+  "publisher": "SWZ Lab",
+  "description": "Gaussian color denoising using Restormer transformer architecture",
+  "adapter": "restormer",
+  "file": "restormer_denoise.onnx",
+  "tileSize": 512,
+  "tileOverlap": 32
+}

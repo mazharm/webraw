@@ -6,6 +6,7 @@ pub struct AppConfig {
     pub allowed_origins: Vec<String>,
     pub gemini_model: String,
     pub claude_model: String,
+    pub openai_model: String,
     pub cache_dir: String,
     pub cache_ttl_secs: u64,
     pub cache_ttl_fallback_secs: u64,
@@ -20,6 +21,7 @@ pub struct AppConfig {
     pub sse_timeout_secs: u64,
     pub idempotency_ttl_secs: u64,
     pub models_dir: String,
+    pub require_https: bool,
 }
 
 impl AppConfig {
@@ -31,8 +33,9 @@ impl AppConfig {
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .collect(),
-            gemini_model: env::var("GEMINI_MODEL").unwrap_or_else(|_| "nano-banana-pro".to_string()),
+            gemini_model: env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-pro".to_string()),
             claude_model: env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
+            openai_model: env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4.1".to_string()),
             cache_dir: env::var("CACHE_DIR").unwrap_or_else(|_| "./cache".to_string()),
             cache_ttl_secs: env::var("CACHE_TTL_SECS")
                 .ok()
@@ -80,6 +83,10 @@ impl AppConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(600),
             models_dir: env::var("MODELS_DIR").unwrap_or_else(|_| "./models".to_string()),
+            require_https: env::var("REQUIRE_HTTPS")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
         }
     }
 }

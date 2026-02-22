@@ -48,10 +48,11 @@ export function AppShell() {
     setImportProgress({ current: 0, total: fileArray.length });
     setImportError(null);
 
-    const newAssets: Asset[] = [];
     const errors: string[] = [];
-    for (let i = 0; i < fileArray.length; i++) {
-      const file = fileArray[i];
+    let completed = 0;
+    const CONCURRENCY = 4;
+
+    const importOne = async (file: File) => {
       try {
         const result = await uploadFile(file);
         let thumbnailUrl: string | undefined;
@@ -63,7 +64,7 @@ export function AppShell() {
         }
 
         const isRaw = /\.(dng|cr2|cr3|nef|arw|raf)$/i.test(file.name);
-        newAssets.push({
+        const asset: Asset = {
           id: crypto.randomUUID(),
           filename: file.name,
           mime: file.type || 'application/octet-stream',
@@ -73,7 +74,8 @@ export function AppShell() {
           exif: result.exif ?? undefined,
           fileId: result.fileId,
           thumbnailUrl,
-        });
+        };
+        addAssets([asset]);
       } catch (err: unknown) {
         const detail = err && typeof err === 'object' && 'detail' in err
           ? (err as { detail: string }).detail
@@ -81,13 +83,24 @@ export function AppShell() {
         console.error(`Failed to import ${file.name}:`, err);
         errors.push(`${file.name}: ${detail}`);
       }
-      setImportProgress({ current: i + 1, total: fileArray.length });
-    }
+      completed++;
+      setImportProgress({ current: completed, total: fileArray.length });
+    };
+
+    // Process files with bounded concurrency
+    let cursor = 0;
+    const next = async (): Promise<void> => {
+      while (cursor < fileArray.length) {
+        const idx = cursor++;
+        await importOne(fileArray[idx]);
+      }
+    };
+    const workers = Array.from({ length: Math.min(CONCURRENCY, fileArray.length) }, () => next());
+    await Promise.all(workers);
 
     if (errors.length > 0) {
       setImportError(`Import failed: ${errors.join('; ')}`);
     }
-    addAssets(newAssets);
     setImportProgress(null);
     e.target.value = '';
   }, [addAssets, setImportProgress]);

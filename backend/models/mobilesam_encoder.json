@@ -1,0 +1,9 @@
+{
+  "id": "mobilesam-encoder",
+  "name": "MobileSAM Encoder",
+  "publisher": "Chaoning Zhang et al.",
+  "description": "Lightweight TinyViT image encoder for MobileSAM segmentation",
+  "adapter": "mobilesam_encoder",
+  "file": "mobilesam_encoder.onnx",
+  "inputSize": [1024, 1024]
+}

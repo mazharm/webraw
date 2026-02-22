@@ -1,0 +1,8 @@
+{
+  "id": "bisenet-face",
+  "name": "BiSeNet Face Parsing",
+  "publisher": "zllrunning",
+  "description": "19-class face parsing segmentation using BiSeNet with ResNet-18 backbone",
+  "adapter": "bisenet",
+  "file": "bisenet_face.onnx"
+}

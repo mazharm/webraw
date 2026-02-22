@@ -78,9 +78,33 @@ impl RenderService {
         if let Some(img) = self.get_cached_base_image(file_id, max_edge) {
             return Ok(img);
         }
-        // Slow path: read file, decode, cache
+        // Slow path: read file, decode + resize on blocking thread to avoid
+        // holding a tokio worker hostage during CPU-heavy RAW decode
         let data = file_cache.read_file_bytes(file_id).await?;
-        self.get_base_image(file_id, max_edge, &data)
+        let arc_img = tokio::task::spawn_blocking(move || -> Result<Arc<DynamicImage>, AppError> {
+            let img = load_image(&data)?;
+            Ok(Arc::new(resize_image(&img, max_edge)))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Decode task panicked: {}", e)))??;
+
+        // Insert into cache
+        let key = (file_id.to_string(), max_edge);
+        {
+            let mut cache = self.base_image_cache.lock();
+            if cache.len() >= MAX_CACHED_IMAGES {
+                if let Some(oldest_key) = cache
+                    .iter()
+                    .min_by_key(|(_, (_, ts))| *ts)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest_key);
+                }
+            }
+            cache.insert(key, (Arc::clone(&arc_img), std::time::Instant::now()));
+        }
+
+        Ok(arc_img)
     }
 
     /// Public accessor for the proxy/base image. Used by auto-enhance to
@@ -406,7 +430,21 @@ fn resize_image(img: &DynamicImage, max_edge: u32) -> DynamicImage {
     img.resize_exact(nw, nh, FilterType::Lanczos3)
 }
 
+/// Buffer-level operations that can be inserted between pipeline phases.
+/// When all fields are None, the pipeline runs identically to the original.
+#[derive(Default)]
+pub struct OptimizeBufferOps {
+    /// Denoised image buffer (RGBA u8) to replace after Phase 1 (Exposure/WB)
+    pub denoised_buffer: Option<Vec<u8>>,
+    /// HDRNet bilateral grid coefficients to apply after Phase 2 (Tonal/Contrast/Curve)
+    pub hdrnet_coeffs: Option<Vec<f32>>,
+}
+
 fn apply_edit_state(img: &DynamicImage, state: &EditState) -> DynamicImage {
+    apply_edit_state_with_ops(img, state, &OptimizeBufferOps::default())
+}
+
+fn apply_edit_state_with_ops(img: &DynamicImage, state: &EditState, ops: &OptimizeBufferOps) -> DynamicImage {
     let rgba = img.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
     let mut output = rgba.clone();
@@ -447,9 +485,8 @@ fn apply_edit_state(img: &DynamicImage, state: &EditState) -> DynamicImage {
     let cx = width as f64 / 2.0;
     let cy = height as f64 / 2.0;
 
-    for (idx, pixel) in output.pixels_mut().enumerate() {
-        let px = (idx as u32) % width;
-        let py = (idx as u32) / width;
+    // ═══ Phase 1: Exposure + White Balance ═══════════════════════════
+    for pixel in output.pixels_mut() {
         let mut r = pixel[0] as f64 / 255.0;
         let mut g_ch = pixel[1] as f64 / 255.0;
         let mut b = pixel[2] as f64 / 255.0;
@@ -471,6 +508,31 @@ fn apply_edit_state(img: &DynamicImage, state: &EditState) -> DynamicImage {
             r *= 1.0 + tint_shift * 0.5;
             b *= 1.0 + tint_shift * 0.5;
         }
+
+        pixel[0] = (r * 255.0).clamp(0.0, 255.0) as u8;
+        pixel[1] = (g_ch * 255.0).clamp(0.0, 255.0) as u8;
+        pixel[2] = (b * 255.0).clamp(0.0, 255.0) as u8;
+    }
+
+    // ═══ [BUFFER] Denoise insertion point ═══════════════════════════
+    if let Some(ref denoised) = ops.denoised_buffer {
+        let expected_len = (width * height * 4) as usize;
+        if denoised.len() == expected_len {
+            for (i, pixel) in output.pixels_mut().enumerate() {
+                let base = i * 4;
+                pixel[0] = denoised[base];
+                pixel[1] = denoised[base + 1];
+                pixel[2] = denoised[base + 2];
+                pixel[3] = denoised[base + 3];
+            }
+        }
+    }
+
+    // ═══ Phase 2: Tonal range, Contrast, Tone Curve ════════════════
+    for pixel in output.pixels_mut() {
+        let mut r = pixel[0] as f64 / 255.0;
+        let mut g_ch = pixel[1] as f64 / 255.0;
+        let mut b = pixel[2] as f64 / 255.0;
 
         // --- Tonal range (highlights, shadows, whites, blacks) ---
         if has_tonal {
@@ -510,6 +572,53 @@ fn apply_edit_state(img: &DynamicImage, state: &EditState) -> DynamicImage {
             g_ch = apply_curve_lut(lut, g_ch);
             b = apply_curve_lut(lut, b);
         }
+
+        pixel[0] = (r * 255.0).clamp(0.0, 255.0) as u8;
+        pixel[1] = (g_ch * 255.0).clamp(0.0, 255.0) as u8;
+        pixel[2] = (b * 255.0).clamp(0.0, 255.0) as u8;
+    }
+
+    // ═══ [BUFFER] HDRNet insertion point ════════════════════════════
+    if let Some(ref coeffs) = ops.hdrnet_coeffs {
+        // HDRNet bilateral grid: coeffs are [12, 16, 16, 8] flattened
+        let grid_d = 16usize;
+        let grid_l = 8usize;
+        let num_coeffs = 12usize;
+
+        if coeffs.len() >= num_coeffs * grid_d * grid_d * grid_l {
+            for (idx, pixel) in output.pixels_mut().enumerate() {
+                let px = (idx as u32) % width;
+                let py = (idx as u32) / width;
+
+                let r = pixel[0] as f32 / 255.0;
+                let g_v = pixel[1] as f32 / 255.0;
+                let b_v = pixel[2] as f32 / 255.0;
+                let lum = 0.2126 * r + 0.7152 * g_v + 0.0722 * b_v;
+
+                let gx = (px as f32 / width as f32) * (grid_d as f32 - 1.0);
+                let gy = (py as f32 / height as f32) * (grid_d as f32 - 1.0);
+                let gl = lum * (grid_l as f32 - 1.0);
+
+                let c = trilinear_sample_grid(coeffs, num_coeffs, grid_d, grid_d, grid_l, gx, gy, gl);
+
+                let out_r = (c[0] * r + c[1] * g_v + c[2] * b_v + c[3]).clamp(0.0, 1.0);
+                let out_g = (c[4] * r + c[5] * g_v + c[6] * b_v + c[7]).clamp(0.0, 1.0);
+                let out_b = (c[8] * r + c[9] * g_v + c[10] * b_v + c[11]).clamp(0.0, 1.0);
+
+                pixel[0] = (out_r * 255.0) as u8;
+                pixel[1] = (out_g * 255.0) as u8;
+                pixel[2] = (out_b * 255.0) as u8;
+            }
+        }
+    }
+
+    // ═══ Phase 3: HSL, Sat/Vib, Dehaze, HDR, Clarity, Texture, Film, Vignette, Grain ═══
+    for (idx, pixel) in output.pixels_mut().enumerate() {
+        let px = (idx as u32) % width;
+        let py = (idx as u32) / width;
+        let mut r = pixel[0] as f64 / 255.0;
+        let mut g_ch = pixel[1] as f64 / 255.0;
+        let mut b = pixel[2] as f64 / 255.0;
 
         // --- HSL per-channel adjustments ---
         if has_hsl {
@@ -859,6 +968,60 @@ fn pixel_noise(x: u32, y: u32, size: f64) -> f64 {
     h = (h ^ (h >> 13)).wrapping_mul(1274126177);
     h ^= h >> 16;
     (h as f64 / u32::MAX as f64) * 2.0 - 1.0 // range [-1, 1]
+}
+
+// ─── HDRNet Grid Sampling (for buffer ops) ───────────────────
+
+/// Trilinear interpolation in a bilateral grid for HDRNet buffer insertion
+fn trilinear_sample_grid(
+    grid: &[f32],
+    num_coeffs: usize,
+    gw: usize,
+    gh: usize,
+    gd: usize,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> Vec<f32> {
+    let x0 = (x.floor() as usize).min(gw - 1);
+    let x1 = (x0 + 1).min(gw - 1);
+    let y0 = (y.floor() as usize).min(gh - 1);
+    let y1 = (y0 + 1).min(gh - 1);
+    let z0 = (z.floor() as usize).min(gd - 1);
+    let z1 = (z0 + 1).min(gd - 1);
+
+    let fx = x - x.floor();
+    let fy = y - y.floor();
+    let fz = z - z.floor();
+
+    let mut result = vec![0.0f32; num_coeffs];
+
+    for c in 0..num_coeffs {
+        let idx = |cc: usize, yy: usize, xx: usize, zz: usize| -> usize {
+            cc * gh * gw * gd + yy * gw * gd + xx * gd + zz
+        };
+
+        let v000 = grid.get(idx(c, y0, x0, z0)).copied().unwrap_or(0.0);
+        let v001 = grid.get(idx(c, y0, x0, z1)).copied().unwrap_or(0.0);
+        let v010 = grid.get(idx(c, y0, x1, z0)).copied().unwrap_or(0.0);
+        let v011 = grid.get(idx(c, y0, x1, z1)).copied().unwrap_or(0.0);
+        let v100 = grid.get(idx(c, y1, x0, z0)).copied().unwrap_or(0.0);
+        let v101 = grid.get(idx(c, y1, x0, z1)).copied().unwrap_or(0.0);
+        let v110 = grid.get(idx(c, y1, x1, z0)).copied().unwrap_or(0.0);
+        let v111 = grid.get(idx(c, y1, x1, z1)).copied().unwrap_or(0.0);
+
+        let c00 = v000 * (1.0 - fz) + v001 * fz;
+        let c01 = v010 * (1.0 - fz) + v011 * fz;
+        let c10 = v100 * (1.0 - fz) + v101 * fz;
+        let c11 = v110 * (1.0 - fz) + v111 * fz;
+
+        let c0 = c00 * (1.0 - fx) + c01 * fx;
+        let c1 = c10 * (1.0 - fx) + c11 * fx;
+
+        result[c] = c0 * (1.0 - fy) + c1 * fy;
+    }
+
+    result
 }
 
 // ─── Helpers ──────────────────────────────────────────────────

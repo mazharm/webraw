@@ -1,0 +1,8 @@
+{
+  "id": "mobilesam-decoder",
+  "name": "MobileSAM Decoder",
+  "publisher": "Chaoning Zhang et al.",
+  "description": "SAM mask decoder for prompt-based segmentation with MobileSAM",
+  "adapter": "mobilesam_decoder",
+  "file": "mobilesam_decoder.onnx"
+}

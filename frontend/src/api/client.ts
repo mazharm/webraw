@@ -1,4 +1,4 @@
-import type { EditState, JobInfo, ProblemDetail, HistogramData, EnhanceModelDescriptor } from '../types';
+import type { EditState, JobInfo, ProblemDetail, HistogramData, EnhanceModelDescriptor, OptimizeModelStatus } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api/v1';
 
@@ -152,12 +152,21 @@ export async function createAiEdit(
     negativePrompt?: string;
     idempotencyKey?: string;
     editOptions?: Record<string, unknown>;
+    provider?: 'gemini' | 'openai' | 'google-imagen';
   }
 ): Promise<{ jobId: string }> {
+  const provider = options?.provider ?? 'gemini';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'X-Gemini-Key': apiKey,
   };
+
+  // Route API key header based on provider
+  if (provider === 'openai') {
+    headers['X-OpenAI-Key'] = apiKey;
+  } else {
+    headers['X-Gemini-Key'] = apiKey;
+  }
+
   if (options?.idempotencyKey) {
     headers['Idempotency-Key'] = options.idempotencyKey;
   }
@@ -171,6 +180,7 @@ export async function createAiEdit(
       prompt,
       negativePrompt: options?.negativePrompt,
       mode,
+      provider,
       options: options?.editOptions,
     }),
   });
@@ -184,7 +194,7 @@ export async function listEnhanceModels(): Promise<{ models: EnhanceModelDescrip
 export async function runAutoEnhance(
   fileId: string,
   modelId: string,
-  options?: { strength?: number; signal?: AbortSignal; apiKey?: string; anthropicApiKey?: string }
+  options?: { strength?: number; signal?: AbortSignal; apiKey?: string; anthropicApiKey?: string; openaiApiKey?: string }
 ): Promise<{ jobId: string }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -195,6 +205,9 @@ export async function runAutoEnhance(
   if (options?.anthropicApiKey) {
     headers['X-Anthropic-Key'] = options.anthropicApiKey;
   }
+  if (options?.openaiApiKey) {
+    headers['X-OpenAI-Key'] = options.openaiApiKey;
+  }
   return apiJson('/auto-enhance/run', {
     method: 'POST',
     headers,
@@ -204,6 +217,43 @@ export async function runAutoEnhance(
       strength: options?.strength,
     }),
     signal: options?.signal,
+  });
+}
+
+// Optimize
+export async function listOptimizeModels(): Promise<{ models: OptimizeModelStatus[] }> {
+  return apiJson('/optimize/models');
+}
+
+export async function runOptimize(
+  fileId: string,
+  options?: {
+    strength?: number;
+    denoise?: boolean;
+    enhance?: boolean;
+    masks?: boolean;
+    signal?: AbortSignal;
+  }
+): Promise<{ jobId: string }> {
+  return apiJson('/optimize/run', {
+    method: 'POST',
+    body: JSON.stringify({
+      fileId,
+      strength: options?.strength,
+      denoise: options?.denoise,
+      enhance: options?.enhance,
+      masks: options?.masks,
+    }),
+    signal: options?.signal,
+  });
+}
+
+export async function computeOptimizeMasks(
+  fileId: string,
+): Promise<{ jobId: string }> {
+  return apiJson('/optimize/masks', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
   });
 }
 

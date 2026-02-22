@@ -112,7 +112,14 @@ impl AiProxyService {
         prompt: &str,
         mode: &str,
         _options: Option<&serde_json::Value>,
+        provider: Option<&str>,
     ) -> Result<AiEditResult, AppError> {
+        match provider.unwrap_or("gemini") {
+            "openai" => return self.execute_openai_edit(api_key, image_base64, prompt, mode).await,
+            "google-imagen" => return self.execute_imagen_edit(api_key, image_base64, prompt, mode).await,
+            _ => {} // fall through to Gemini
+        }
+
         let model = &self.config.gemini_model;
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
@@ -201,5 +208,170 @@ impl AiProxyService {
         }
 
         Err(AppError::Internal("No image data in Gemini response".to_string()))
+    }
+
+    async fn execute_openai_edit(
+        &self,
+        api_key: &str,
+        image_base64: &str,
+        prompt: &str,
+        mode: &str,
+    ) -> Result<AiEditResult, AppError> {
+        let model = "gpt-image-1";
+        let url = "https://api.openai.com/v1/images/edits";
+
+        let system_prompt = match mode {
+            "edit" => format!("Edit this image: {}", prompt),
+            "remove" => format!("Remove the following from this image: {}", prompt),
+            "replace_bg" => format!("Replace the background of this image with: {}", prompt),
+            "relight" => format!("Relight this image: {}", prompt),
+            "expand" => format!("Expand this image outward: {}", prompt),
+            _ => prompt.to_string(),
+        };
+
+        // OpenAI images/edits expects multipart form with image file + prompt
+        // Decode the base64 image to bytes for the multipart upload
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(image_base64)
+            .map_err(|e| AppError::Internal(format!("Failed to decode image base64: {}", e)))?;
+
+        let image_part = reqwest::multipart::Part::bytes(image_bytes)
+            .file_name("image.png")
+            .mime_str("image/png")
+            .map_err(|e| AppError::Internal(format!("Multipart error: {}", e)))?;
+
+        let form = reqwest::multipart::Form::new()
+            .text("model", model.to_string())
+            .text("prompt", system_prompt)
+            .part("image", image_part);
+
+        info!(model = %model, mode = %mode, "Sending AI edit request to OpenAI");
+
+        let response = self.client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("OpenAI API request failed: {}", e)))?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(AppError::AiQuotaExceeded);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(AppError::AiInvalidKey);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::AiBadRequest(body));
+        }
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!("OpenAI API error {}: {}", status, body)));
+        }
+
+        let resp_json: serde_json::Value = response.json().await.map_err(|e| {
+            AppError::Internal(format!("Failed to parse OpenAI response: {}", e))
+        })?;
+
+        // OpenAI returns { data: [{ b64_json: "..." }] }
+        let b64_data = resp_json
+            .pointer("/data/0/b64_json")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Internal("No image data in OpenAI response".to_string()))?;
+
+        let image_data = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .map_err(|e| AppError::Internal(format!("Failed to decode OpenAI image: {}", e)))?;
+
+        Ok(AiEditResult {
+            image_data,
+            mime_type: "image/png".to_string(),
+            model: model.to_string(),
+        })
+    }
+
+    async fn execute_imagen_edit(
+        &self,
+        api_key: &str,
+        image_base64: &str,
+        prompt: &str,
+        mode: &str,
+    ) -> Result<AiEditResult, AppError> {
+        let model = "imagen-3.0-edit-001";
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:predict",
+            model
+        );
+
+        let system_prompt = match mode {
+            "edit" => format!("Edit this image: {}", prompt),
+            "remove" => format!("Remove the following from this image: {}", prompt),
+            "replace_bg" => format!("Replace the background of this image with: {}", prompt),
+            "relight" => format!("Relight this image: {}", prompt),
+            "expand" => format!("Expand this image outward: {}", prompt),
+            _ => prompt.to_string(),
+        };
+
+        let body = serde_json::json!({
+            "instances": [{
+                "prompt": system_prompt,
+                "image": {
+                    "bytesBase64Encoded": image_base64
+                }
+            }],
+            "parameters": {
+                "sampleCount": 1
+            }
+        });
+
+        info!(model = %model, mode = %mode, "Sending AI edit request to Imagen");
+
+        let response = self.client
+            .post(&url)
+            .header("x-goog-api-key", api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("Imagen API request failed: {}", e)))?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(AppError::AiQuotaExceeded);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(AppError::AiInvalidKey);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::AiBadRequest(body));
+        }
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!("Imagen API error {}: {}", status, body)));
+        }
+
+        let resp_json: serde_json::Value = response.json().await.map_err(|e| {
+            AppError::Internal(format!("Failed to parse Imagen response: {}", e))
+        })?;
+
+        // Imagen returns { predictions: [{ bytesBase64Encoded: "..." }] }
+        let b64_data = resp_json
+            .pointer("/predictions/0/bytesBase64Encoded")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Internal("No image data in Imagen response".to_string()))?;
+
+        let image_data = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .map_err(|e| AppError::Internal(format!("Failed to decode Imagen image: {}", e)))?;
+
+        Ok(AiEditResult {
+            image_data,
+            mime_type: "image/png".to_string(),
+            model: model.to_string(),
+        })
     }
 }

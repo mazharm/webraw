@@ -63,6 +63,9 @@ pub enum AppError {
     #[error("Model not found: {0}")]
     ModelNotFound(String),
 
+    #[error("Optimize error: {0}")]
+    OptimizeError(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -104,13 +107,13 @@ impl AppError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "AI_QUOTA_EXCEEDED",
                 "AI Quota Exceeded",
-                "Upstream Gemini API quota exceeded".to_string(),
+                "Upstream API quota exceeded".to_string(),
             ),
             AppError::AiInvalidKey => (
                 StatusCode::UNAUTHORIZED,
                 "AI_INVALID_KEY",
                 "Invalid API Key",
-                "Gemini API key was rejected".to_string(),
+                "API key was rejected".to_string(),
             ),
             AppError::RateLimited { retry_after } => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -153,6 +156,12 @@ impl AppError {
                 "MODEL_NOT_FOUND",
                 "Model Not Found",
                 format!("Enhancement model '{}' not found", id),
+            ),
+            AppError::OptimizeError(detail) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OPTIMIZE_ERROR",
+                "Optimize Error",
+                detail.clone(),
             ),
             AppError::Internal(detail) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

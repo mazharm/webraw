@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   tokens,
+  Badge,
   Button,
   Dropdown,
   Option,
   Slider,
   Spinner,
+  Switch,
   Text,
 } from '@fluentui/react-components';
 import { PaintBrushSparkle24Regular } from '@fluentui/react-icons';
@@ -13,8 +15,8 @@ import { PanelSection } from '../../common/PanelSection';
 import { useEditStore } from '../../../stores/editStore';
 import { useLibraryStore } from '../../../stores/libraryStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
-import { listEnhanceModels, runAutoEnhance, pollJob } from '../../../api/client';
-import type { EnhanceModelDescriptor, GlobalAdjustments } from '../../../types';
+import { listEnhanceModels, runAutoEnhance, runOptimize, pollJob } from '../../../api/client';
+import type { EnhanceModelDescriptor, GlobalAdjustments, OptimizeMasksSummary } from '../../../types';
 
 export function AutoEnhancePanel() {
   const editState = useEditStore(s => s.editState);
@@ -23,6 +25,7 @@ export function AutoEnhancePanel() {
   const activeAsset = useLibraryStore(s => s.assets.find(a => a.id === s.activeAssetId));
   const geminiApiKey = useSettingsStore(s => s.geminiApiKey);
   const anthropicApiKey = useSettingsStore(s => s.anthropicApiKey);
+  const openaiApiKey = useSettingsStore(s => s.openaiApiKey);
 
   const [models, setModels] = useState<EnhanceModelDescriptor[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>('builtin');
@@ -31,9 +34,19 @@ export function AutoEnhancePanel() {
   const [error, setError] = useState<string | null>(null);
   const [adjustedParams, setAdjustedParams] = useState<Record<string, number> | null>(null);
 
+  // Optimize-specific state
+  const [progress, setProgress] = useState(0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [denoise, setDenoise] = useState(true);
+  const [enhance, setEnhance] = useState(true);
+  const [masks, setMasks] = useState(true);
+  const [maskResults, setMaskResults] = useState<OptimizeMasksSummary | null>(null);
+
   // Store original values and raw recommendations for live re-interpolation
   const originalRef = useRef<Partial<GlobalAdjustments> | null>(null);
   const recommendedRef = useRef<Record<string, number> | null>(null);
+
+  const isOptimize = selectedModelId === 'optimize';
 
   // Fetch models on mount
   useEffect(() => {
@@ -74,28 +87,63 @@ export function AutoEnhancePanel() {
     setIsRunning(true);
     setError(null);
     setAdjustedParams(null);
+    setProgress(0);
+    setMaskResults(null);
 
     // Capture originals before applying
     const orig: Partial<GlobalAdjustments> = { ...editState.global };
     originalRef.current = orig;
 
     try {
-      const { jobId } = await runAutoEnhance(activeAsset.fileId, selectedModelId, {
-        apiKey: geminiApiKey ?? undefined,
-        anthropicApiKey: anthropicApiKey ?? undefined,
-      });
-      const job = await pollJob(jobId);
+      if (isOptimize) {
+        // Route to optimize API
+        const { jobId } = await runOptimize(activeAsset.fileId, {
+          strength,
+          denoise,
+          enhance,
+          masks,
+        });
+        const job = await pollJob(jobId, setProgress);
 
-      if (job.status === 'FAILED') {
-        setError(job.error?.detail ?? 'Auto fix failed');
-        return;
-      }
+        if (job.status === 'FAILED') {
+          setError(job.error?.detail ?? 'Optimize failed');
+          return;
+        }
 
-      const result = job.result as { type: string; values?: Record<string, number> } | undefined;
-      if (result?.type === 'Parameters' && result.values) {
-        recommendedRef.current = result.values;
-        applyInterpolated(result.values, orig, strength);
-        pushHistory('Auto Fix');
+        const result = job.result as {
+          appliedParams?: Record<string, number>;
+          masks?: OptimizeMasksSummary;
+        } | undefined;
+
+        if (result?.masks) {
+          setMaskResults(result.masks);
+        }
+
+        if (result?.appliedParams) {
+          recommendedRef.current = result.appliedParams;
+          applyInterpolated(result.appliedParams, orig, strength);
+          pushHistory('Auto Fix');
+        }
+      } else {
+        // Route to auto-enhance API
+        const { jobId } = await runAutoEnhance(activeAsset.fileId, selectedModelId, {
+          apiKey: geminiApiKey ?? undefined,
+          anthropicApiKey: anthropicApiKey ?? undefined,
+          openaiApiKey: openaiApiKey ?? undefined,
+        });
+        const job = await pollJob(jobId);
+
+        if (job.status === 'FAILED') {
+          setError(job.error?.detail ?? 'Auto fix failed');
+          return;
+        }
+
+        const result = job.result as { type: string; values?: Record<string, number> } | undefined;
+        if (result?.type === 'Parameters' && result.values) {
+          recommendedRef.current = result.values;
+          applyInterpolated(result.values, orig, strength);
+          pushHistory('Auto Fix');
+        }
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Auto fix failed');
@@ -119,7 +167,9 @@ export function AutoEnhancePanel() {
   const needsKey = selectedModel?.requiresApiKey && (
     selectedModel.id === 'claude'
       ? !anthropicApiKey
-      : !geminiApiKey
+      : selectedModel.id === 'openai'
+        ? !openaiApiKey
+        : !geminiApiKey
   );
 
   return (
@@ -136,6 +186,7 @@ export function AutoEnhancePanel() {
               if (data.optionValue) {
                 setSelectedModelId(data.optionValue);
                 setAdjustedParams(null);
+                setMaskResults(null);
                 recommendedRef.current = null;
               }
             }}
@@ -177,7 +228,7 @@ export function AutoEnhancePanel() {
             size={200}
             style={{ color: tokens.colorPaletteYellowForeground1 }}
           >
-            This provider requires {selectedModel?.id === 'claude' ? 'an Anthropic' : 'a Gemini'} API key. Set it in Settings.
+            This provider requires {selectedModel?.id === 'claude' ? 'an Anthropic' : selectedModel?.id === 'openai' ? 'an OpenAI' : 'a Gemini'} API key. Set it in Settings.
           </Text>
         )}
 
@@ -197,20 +248,86 @@ export function AutoEnhancePanel() {
           </Text>
         </div>
 
+        {/* Advanced Options — only for optimize model */}
+        {isOptimize && (
+          <>
+            <div
+              style={{ cursor: 'pointer', userSelect: 'none' }}
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+                {showAdvanced ? '\u25BE' : '\u25B8'} Advanced Options
+              </Text>
+            </div>
+
+            {showAdvanced && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text size={200}>AI Denoise</Text>
+                  <Switch
+                    checked={denoise}
+                    onChange={(_, data) => setDenoise(data.checked)}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text size={200}>HDRNet Enhance</Text>
+                  <Switch
+                    checked={enhance}
+                    onChange={(_, data) => setEnhance(data.checked)}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text size={200}>Smart Masks</Text>
+                  <Switch
+                    checked={masks}
+                    onChange={(_, data) => setMasks(data.checked)}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
         <Button
           appearance="primary"
           icon={<PaintBrushSparkle24Regular />}
           onClick={handleRun}
-          disabled={isRunning || !activeAsset?.fileId || needsKey}
+          disabled={isRunning || !activeAsset?.fileId || !!needsKey}
           style={{ width: '100%' }}
         >
-          {isRunning ? <Spinner size="tiny" /> : 'Auto Fix'}
+          {isRunning ? (
+            isOptimize ? (
+              <>
+                <Spinner size="tiny" style={{ marginRight: 6 }} />
+                {Math.round(progress * 100)}%
+              </>
+            ) : (
+              <Spinner size="tiny" />
+            )
+          ) : (
+            'Auto Fix'
+          )}
         </Button>
 
         {error && (
           <Text size={200} style={{ color: tokens.colorPaletteRedForeground1 }}>
             {error}
           </Text>
+        )}
+
+        {/* Mask detection badges — only for optimize model */}
+        {maskResults && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {maskResults.subject && (
+              <Badge appearance="filled" color="brand" size="small">Subject</Badge>
+            )}
+            {maskResults.sky && (
+              <Badge appearance="filled" color="informative" size="small">Sky</Badge>
+            )}
+            {maskResults.skin && (
+              <Badge appearance="filled" color="subtle" size="small">Skin</Badge>
+            )}
+          </div>
         )}
 
         {adjustedParams && Object.keys(adjustedParams).length > 0 && (

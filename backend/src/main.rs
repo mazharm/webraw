@@ -7,12 +7,13 @@ use axum::{
     Router,
     middleware,
     extract::Request,
-    http::{HeaderMap, Method},
+    http::{HeaderMap, Method, StatusCode, header::HeaderName},
     response::Response,
     body::Body,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use models::config::AppConfig;
@@ -22,6 +23,7 @@ use services::render::RenderService;
 use services::ai_proxy::AiProxyService;
 use services::job_manager::JobManager;
 use services::auto_enhance::AutoEnhanceService;
+use services::optimize::OptimizeService;
 use services::rate_limiter::RateLimiter;
 
 pub struct AppState {
@@ -31,6 +33,7 @@ pub struct AppState {
     pub ai_proxy: AiProxyService,
     pub jobs: JobManager,
     pub auto_enhance: AutoEnhanceService,
+    pub optimize: OptimizeService,
     pub render_limiter: RateLimiter,
     pub ai_limiter: RateLimiter,
     pub upload_limiter: RateLimiter,
@@ -57,6 +60,38 @@ async fn session_token_middleware(
         if token.is_none() || token.unwrap().is_empty() {
             return Err(AppError::MissingSessionToken);
         }
+    }
+
+    Ok(next.run(request).await)
+}
+
+/// Headers that must never appear in logs.
+const SENSITIVE_HEADERS: &[&str] = &[
+    "x-gemini-key",
+    "x-anthropic-key",
+    "x-openai-key",
+    "authorization",
+];
+
+fn is_sensitive_header(name: &HeaderName) -> bool {
+    let lower = name.as_str();
+    SENSITIVE_HEADERS.iter().any(|&s| lower == s)
+}
+
+/// Reject plain-HTTP requests when the server is bound to a non-loopback address.
+async fn require_https_middleware(
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Result<Response, StatusCode> {
+    // If the request came through a reverse proxy that set X-Forwarded-Proto, trust it.
+    let proto = request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok());
+
+    let is_https = proto.map_or(false, |p| p.eq_ignore_ascii_case("https"));
+    if !is_https {
+        return Err(StatusCode::FORBIDDEN);
     }
 
     Ok(next.run(request).await)
@@ -94,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     let ai_proxy = AiProxyService::new(config.clone());
     let jobs = JobManager::new(config.idempotency_ttl_secs);
     let auto_enhance = AutoEnhanceService::new(&config.models_dir);
+    let optimize = OptimizeService::new(&config.models_dir);
     let render_limiter = RateLimiter::new(config.rate_limit_render);
     let ai_limiter = RateLimiter::new(config.rate_limit_ai);
     let upload_limiter = RateLimiter::new(config.rate_limit_upload);
@@ -105,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         ai_proxy,
         jobs,
         auto_enhance,
+        optimize,
         render_limiter,
         ai_limiter,
         upload_limiter,
@@ -121,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
             "Content-Type".parse().unwrap(),
             "X-Gemini-Key".parse().unwrap(),
             "X-Anthropic-Key".parse().unwrap(),
+            "X-OpenAI-Key".parse().unwrap(),
             "X-Request-Id".parse().unwrap(),
             "X-Session-Token".parse().unwrap(),
             "Idempotency-Key".parse().unwrap(),
@@ -141,18 +179,73 @@ async fn main() -> anyhow::Result<()> {
         .route("/ai/edit", axum::routing::post(handlers::ai::create_ai_edit))
         .route("/auto-enhance/models", axum::routing::get(handlers::auto_enhance::list_models))
         .route("/auto-enhance/run", axum::routing::post(handlers::auto_enhance::run_auto_enhance))
+        .route("/optimize/models", axum::routing::get(handlers::optimize::list_optimize_models))
+        .route("/optimize/run", axum::routing::post(handlers::optimize::run_optimize))
+        .route("/optimize/masks", axum::routing::post(handlers::optimize::compute_masks))
         .route("/jobs/:job_id", axum::routing::get(handlers::jobs::get_job));
 
-    let app = Router::new()
+    // Trace layer that redacts sensitive API-key headers from log output
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|request: &Request<Body>| {
+            // Build a sanitized header summary (redact key headers)
+            let safe_headers: Vec<String> = request
+                .headers()
+                .keys()
+                .map(|name| {
+                    if is_sensitive_header(name) {
+                        format!("{}=[REDACTED]", name)
+                    } else {
+                        let val = request
+                            .headers()
+                            .get(name)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        format!("{}={}", name, val)
+                    }
+                })
+                .collect();
+
+            tracing::info_span!(
+                "http_request",
+                method = %request.method(),
+                uri = %request.uri(),
+                headers = %safe_headers.join(", "),
+            )
+        })
+        .on_response(|response: &Response, latency: std::time::Duration, _span: &Span| {
+            tracing::info!(
+                status = response.status().as_u16(),
+                latency_ms = latency.as_millis() as u64,
+                "response",
+            );
+        });
+
+    // Enforce HTTPS when explicitly configured or when bound to a remote address
+    let is_remote = {
+        let addr_str = config.listen_addr.as_str();
+        let host = addr_str.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr_str);
+        !matches!(host, "127.0.0.1" | "::1" | "localhost" | "0.0.0.0")
+    };
+    let enforce_https = config.require_https || is_remote;
+
+    let mut app = Router::new()
         .nest("/api/v1", api_v1)
         .route("/api/health", axum::routing::get(handlers::health::health_check))
         .route("/api/version", axum::routing::get(handlers::health::version))
         .layer(axum::extract::DefaultBodyLimit::max(config.max_upload_bytes as usize))
         .layer(middleware::from_fn(request_id_middleware))
         .layer(middleware::from_fn(session_token_middleware))
-        .layer(TraceLayer::new_for_http())
+        .layer(trace_layer)
         .layer(cors)
         .with_state(state.clone());
+
+    if enforce_https {
+        tracing::warn!(
+            "HTTPS enforced (require_https={}, listen_addr={}); non-HTTPS requests will be rejected",
+            config.require_https, config.listen_addr
+        );
+        app = app.layer(middleware::from_fn(require_https_middleware));
+    }
 
     let cleanup_state = state.clone();
     tokio::spawn(async move {

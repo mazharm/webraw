@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   tokens,
   Badge,
@@ -17,6 +17,60 @@ import { useLibraryStore } from '../../../stores/libraryStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { listEnhanceModels, runAutoEnhance, runOptimize, pollJob } from '../../../api/client';
 import type { EnhanceModelDescriptor, GlobalAdjustments, OptimizeMasksSummary } from '../../../types';
+
+/** Classify a model into one of the three groups */
+function modelGroup(m: EnhanceModelDescriptor): 'algorithmic' | 'local' | 'remote' {
+  if (m.builtin && !m.requiresApiKey && !m.publisher) return 'algorithmic';
+  if (m.requiresApiKey) return 'remote';
+  return 'local';
+}
+
+/** Collapsible group header */
+function GroupHeader({
+  label,
+  open,
+  onToggle,
+  active,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  active: boolean;
+}) {
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        cursor: 'pointer',
+        userSelect: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '4px 0',
+      }}
+    >
+      <Text size={200} style={{ color: tokens.colorNeutralForeground3, width: 10 }}>
+        {open ? '\u25BE' : '\u25B8'}
+      </Text>
+      <Text
+        size={200}
+        weight="semibold"
+        style={{ color: active ? tokens.colorBrandForeground1 : tokens.colorNeutralForeground2 }}
+      >
+        {label}
+      </Text>
+      {active && (
+        <div style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: tokens.colorBrandForeground1,
+          flexShrink: 0,
+        }} />
+      )}
+    </div>
+  );
+}
 
 export function AutoEnhancePanel() {
   const editState = useEditStore(s => s.editState);
@@ -42,11 +96,31 @@ export function AutoEnhancePanel() {
   const [masks, setMasks] = useState(true);
   const [maskResults, setMaskResults] = useState<OptimizeMasksSummary | null>(null);
 
+  // Section collapse state
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    algorithmic: true,
+    local: false,
+    remote: false,
+  });
+
   // Store original values and raw recommendations for live re-interpolation
   const originalRef = useRef<Partial<GlobalAdjustments> | null>(null);
   const recommendedRef = useRef<Record<string, number> | null>(null);
 
   const isOptimize = selectedModelId === 'optimize';
+
+  // Split models into groups
+  const { algorithmic, local, remote } = useMemo(() => {
+    const groups = { algorithmic: [] as EnhanceModelDescriptor[], local: [] as EnhanceModelDescriptor[], remote: [] as EnhanceModelDescriptor[] };
+    for (const m of models) {
+      groups[modelGroup(m)].push(m);
+    }
+    return groups;
+  }, [models]);
+
+  // Which group is the selected model in?
+  const selectedModel = models.find(m => m.id === selectedModelId);
+  const activeGroup = selectedModel ? modelGroup(selectedModel) : 'algorithmic';
 
   // Fetch models on mount
   useEffect(() => {
@@ -59,6 +133,17 @@ export function AutoEnhancePanel() {
       })
       .catch(() => {/* models endpoint may not be available yet */});
   }, []);
+
+  const toggleSection = (section: string) => {
+    setOpenSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const selectModel = (id: string) => {
+    setSelectedModelId(id);
+    setAdjustedParams(null);
+    setMaskResults(null);
+    recommendedRef.current = null;
+  };
 
   const applyInterpolated = useCallback(
     (recommended: Record<string, number>, original: Partial<GlobalAdjustments>, s: number) => {
@@ -163,7 +248,6 @@ export function AutoEnhancePanel() {
 
   if (!editState) return null;
 
-  const selectedModel = models.find(m => m.id === selectedModelId);
   const needsKey = selectedModel?.requiresApiKey && (
     selectedModel.id === 'claude'
       ? !anthropicApiKey
@@ -174,65 +258,131 @@ export function AutoEnhancePanel() {
 
   return (
     <PanelSection title="Auto Fix" defaultOpen>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div>
-          <Text size={200} weight="semibold" style={{ display: 'block', marginBottom: 4 }}>
-            Provider
-          </Text>
-          <Dropdown
-            value={selectedModel?.name ?? 'Loading...'}
-            selectedOptions={[selectedModelId]}
-            onOptionSelect={(_, data) => {
-              if (data.optionValue) {
-                setSelectedModelId(data.optionValue);
-                setAdjustedParams(null);
-                setMaskResults(null);
-                recommendedRef.current = null;
-              }
-            }}
-            style={{ minWidth: 0, width: '100%' }}
-          >
-            {models.map(m => (
-              <Option key={m.id} value={m.id} text={m.name}>
-                <div>
-                  <Text size={300} weight="semibold">{m.name}</Text>
-                  {m.publisher && (
-                    <Text
-                      size={200}
-                      style={{
-                        display: 'block',
-                        color: tokens.colorNeutralForeground4,
-                      }}
-                    >
-                      by {m.publisher}
-                    </Text>
-                  )}
-                  <Text
-                    size={200}
-                    style={{
-                      display: 'block',
-                      color: tokens.colorNeutralForeground3,
-                      marginTop: 2,
-                    }}
-                  >
-                    {m.description}
-                  </Text>
-                </div>
-              </Option>
-            ))}
-          </Dropdown>
-        </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
 
+        {/* ── Algorithmic ── */}
+        <GroupHeader
+          label="Algorithmic"
+          open={openSections.algorithmic}
+          onToggle={() => toggleSection('algorithmic')}
+          active={activeGroup === 'algorithmic'}
+        />
+        {openSections.algorithmic && algorithmic.length > 0 && (
+          <div style={{ paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {algorithmic.map(m => (
+              <div
+                key={m.id}
+                onClick={() => selectModel(m.id)}
+                style={{
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  background: selectedModelId === m.id ? tokens.colorBrandBackground2 : 'transparent',
+                }}
+              >
+                <Text size={200} weight={selectedModelId === m.id ? 'semibold' : 'regular'}>
+                  {m.name}
+                </Text>
+                <Text size={200} style={{ display: 'block', color: tokens.colorNeutralForeground3 }}>
+                  {m.description}
+                </Text>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Local Models ── */}
+        {local.length > 0 && (
+          <>
+            <GroupHeader
+              label="Local Models"
+              open={openSections.local}
+              onToggle={() => toggleSection('local')}
+              active={activeGroup === 'local'}
+            />
+            {openSections.local && (
+              <div style={{ paddingLeft: 16 }}>
+                <Dropdown
+                  value={activeGroup === 'local' && selectedModel ? selectedModel.name : 'Select...'}
+                  selectedOptions={activeGroup === 'local' ? [selectedModelId] : []}
+                  onOptionSelect={(_, data) => {
+                    if (data.optionValue) selectModel(data.optionValue);
+                  }}
+                  style={{ minWidth: 0, width: '100%' }}
+                >
+                  {local.map(m => (
+                    <Option key={m.id} value={m.id} text={m.name}>
+                      <div>
+                        <Text size={300} weight="semibold">{m.name}</Text>
+                        {m.publisher && (
+                          <Text size={200} style={{ display: 'block', color: tokens.colorNeutralForeground4 }}>
+                            by {m.publisher}
+                          </Text>
+                        )}
+                        <Text size={200} style={{ display: 'block', color: tokens.colorNeutralForeground3, marginTop: 2 }}>
+                          {m.description}
+                        </Text>
+                      </div>
+                    </Option>
+                  ))}
+                </Dropdown>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Remote Models ── */}
+        {remote.length > 0 && (
+          <>
+            <GroupHeader
+              label="Remote Models"
+              open={openSections.remote}
+              onToggle={() => toggleSection('remote')}
+              active={activeGroup === 'remote'}
+            />
+            {openSections.remote && (
+              <div style={{ paddingLeft: 16 }}>
+                <Dropdown
+                  value={activeGroup === 'remote' && selectedModel ? selectedModel.name : 'Select...'}
+                  selectedOptions={activeGroup === 'remote' ? [selectedModelId] : []}
+                  onOptionSelect={(_, data) => {
+                    if (data.optionValue) selectModel(data.optionValue);
+                  }}
+                  style={{ minWidth: 0, width: '100%' }}
+                >
+                  {remote.map(m => (
+                    <Option key={m.id} value={m.id} text={m.name}>
+                      <div>
+                        <Text size={300} weight="semibold">{m.name}</Text>
+                        {m.publisher && (
+                          <Text size={200} style={{ display: 'block', color: tokens.colorNeutralForeground4 }}>
+                            by {m.publisher}
+                          </Text>
+                        )}
+                        <Text size={200} style={{ display: 'block', color: tokens.colorNeutralForeground3, marginTop: 2 }}>
+                          {m.description}
+                        </Text>
+                      </div>
+                    </Option>
+                  ))}
+                </Dropdown>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── API key warning ── */}
         {needsKey && (
           <Text
             size={200}
-            style={{ color: tokens.colorPaletteYellowForeground1 }}
+            style={{ color: tokens.colorPaletteYellowForeground1, marginTop: 4 }}
           >
             This provider requires {selectedModel?.id === 'claude' ? 'an Anthropic' : selectedModel?.id === 'openai' ? 'an OpenAI' : 'a Gemini'} API key. Set it in Settings.
           </Text>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* ── Strength slider ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
           <Text size={200} style={{ minWidth: 52 }}>
             Strength
           </Text>
@@ -248,7 +398,7 @@ export function AutoEnhancePanel() {
           </Text>
         </div>
 
-        {/* Advanced Options — only for optimize model */}
+        {/* ── Advanced Options — only for optimize model ── */}
         {isOptimize && (
           <>
             <div
@@ -288,12 +438,13 @@ export function AutoEnhancePanel() {
           </>
         )}
 
+        {/* ── Auto Fix button ── */}
         <Button
           appearance="primary"
           icon={<PaintBrushSparkle24Regular />}
           onClick={handleRun}
           disabled={isRunning || !activeAsset?.fileId || !!needsKey}
-          style={{ width: '100%' }}
+          style={{ width: '100%', marginTop: 4 }}
         >
           {isRunning ? (
             isOptimize ? (
@@ -309,13 +460,14 @@ export function AutoEnhancePanel() {
           )}
         </Button>
 
+        {/* ── Error display ── */}
         {error && (
           <Text size={200} style={{ color: tokens.colorPaletteRedForeground1 }}>
             {error}
           </Text>
         )}
 
-        {/* Mask detection badges — only for optimize model */}
+        {/* ── Mask detection badges ── */}
         {maskResults && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {maskResults.subject && (
@@ -330,6 +482,7 @@ export function AutoEnhancePanel() {
           </div>
         )}
 
+        {/* ── Adjusted params display ── */}
         {adjustedParams && Object.keys(adjustedParams).length > 0 && (
           <div style={{ marginTop: 4 }}>
             <Text size={200} weight="semibold" style={{ color: tokens.colorNeutralForeground3 }}>

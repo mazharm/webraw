@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      - LISTEN_ADDR=0.0.0.0:8080
+      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+      - CACHE_DIR=/app/cache
+      - CACHE_TTL_SECS=86400
+      - CACHE_MAX_BYTES=10737418240
+      - MAX_UPLOAD_BYTES=104857600
+      - LOG_LEVEL=info
+    volumes:
+      - cache_data:/app/cache
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  cache_data:

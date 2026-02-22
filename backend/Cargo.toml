@@ -1,0 +1,32 @@
+[package]
+name = "webraw-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+image = { version = "0.25", features = ["png", "jpeg", "tiff"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+dashmap = "6"
+parking_lot = "0.12"
+bytes = "1"
+mime_guess = "2"
+tempfile = "3"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+futures = "0.3"
+tokio-stream = "0.1"
+async-channel = "2"
+async-stream = "0.3"

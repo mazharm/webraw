@@ -1,0 +1,17 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+:root {
+  --panel-width: 280px;
+  --command-bar-height: 44px;
+  --thumbnail-size: 160px;
+}

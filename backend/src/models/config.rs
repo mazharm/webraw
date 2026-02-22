@@ -5,6 +5,7 @@ pub struct AppConfig {
     pub listen_addr: String,
     pub allowed_origins: Vec<String>,
     pub gemini_model: String,
+    pub claude_model: String,
     pub cache_dir: String,
     pub cache_ttl_secs: u64,
     pub cache_ttl_fallback_secs: u64,
@@ -31,6 +32,7 @@ impl AppConfig {
                 .map(|s| s.trim().to_string())
                 .collect(),
             gemini_model: env::var("GEMINI_MODEL").unwrap_or_else(|_| "nano-banana-pro".to_string()),
+            claude_model: env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
             cache_dir: env::var("CACHE_DIR").unwrap_or_else(|_| "./cache".to_string()),
             cache_ttl_secs: env::var("CACHE_TTL_SECS")
                 .ok()

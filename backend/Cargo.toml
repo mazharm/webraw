@@ -32,3 +32,5 @@ async-channel = "2"
 async-stream = "0.3"
 rawloader = "0.37"
 async-trait = "0.1"
+ort = { version = "2.0.0-rc.11", features = ["ndarray"] }
+ndarray = "0.17"

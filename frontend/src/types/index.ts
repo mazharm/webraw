@@ -284,6 +284,7 @@ export interface EnhanceModelDescriptor {
   version: string;
   builtin: boolean;
   requiresApiKey: boolean;
+  publisher?: string;
 }
 
 export interface EnhanceResultParameters {

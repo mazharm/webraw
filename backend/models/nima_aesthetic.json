@@ -1,0 +1,13 @@
+{
+  "id": "nima-aesthetic",
+  "name": "NIMA Aesthetic",
+  "publisher": "Google Research",
+  "description": "Aesthetic quality-guided auto fix using Neural Image Assessment",
+  "adapter": "nima_aesthetic",
+  "file": "nima_aesthetic.onnx",
+  "inputSize": [224, 224],
+  "normalize": {
+    "mean": [0.485, 0.456, 0.406],
+    "std": [0.229, 0.224, 0.225]
+  }
+}

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 interface SettingsStore {
   geminiApiKey: string | null;
+  anthropicApiKey: string | null;
   keyMode: 'session' | 'remember';
   redactPrompts: boolean;
   colorSpace: 'sRGB' | 'DisplayP3';
@@ -9,6 +10,7 @@ interface SettingsStore {
   backendHealthy: boolean;
 
   setGeminiApiKey: (key: string | null) => void;
+  setAnthropicApiKey: (key: string | null) => void;
   setKeyMode: (mode: 'session' | 'remember') => void;
   setRedactPrompts: (redact: boolean) => void;
   setColorSpace: (cs: 'sRGB' | 'DisplayP3') => void;
@@ -18,6 +20,7 @@ interface SettingsStore {
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
   geminiApiKey: null,
+  anthropicApiKey: null,
   keyMode: 'session',
   redactPrompts: false,
   colorSpace: 'sRGB',
@@ -25,6 +28,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   backendHealthy: false,
 
   setGeminiApiKey: (key) => set({ geminiApiKey: key }),
+  setAnthropicApiKey: (key) => set({ anthropicApiKey: key }),
   setKeyMode: (mode) => set({ keyMode: mode }),
   setRedactPrompts: (redact) => set({ redactPrompts: redact }),
   setColorSpace: (cs) => set({ colorSpace: cs }),

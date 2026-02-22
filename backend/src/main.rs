@@ -120,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([
             "Content-Type".parse().unwrap(),
             "X-Gemini-Key".parse().unwrap(),
+            "X-Anthropic-Key".parse().unwrap(),
             "X-Request-Id".parse().unwrap(),
             "X-Session-Token".parse().unwrap(),
             "Idempotency-Key".parse().unwrap(),

@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use image::DynamicImage;
 use image::GenericImageView;
+use ndarray::Array4;
+use serde::Deserialize;
 
 use crate::models::auto_enhance::{
     EnhanceModelKind, EnhanceResult, ImageStats, ModelDescriptor,
@@ -17,6 +20,7 @@ use crate::models::error::AppError;
 
 pub struct RunContext {
     pub api_key: Option<String>,
+    pub anthropic_key: Option<String>,
     pub config: Arc<AppConfig>,
 }
 
@@ -48,18 +52,24 @@ impl AutoEnhanceService {
     pub fn new(models_dir: &str) -> Self {
         let mut models: Vec<Arc<dyn EnhanceModel>> = vec![
             Arc::new(BuiltinAutoFix),
-            Arc::new(GeminiAutoFix),
+            Arc::new(ClaudeAutoFix),
         ];
 
-        // Scan for ONNX models (future expansion)
-        if let Ok(entries) = std::fs::read_dir(models_dir) {
+        // Scan for model manifest JSON files and load ONNX models
+        let models_path = Path::new(models_dir);
+        if let Ok(entries) = std::fs::read_dir(models_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "onnx") {
-                    tracing::info!(
-                        "Found ONNX model {:?} but ONNX runtime is not compiled in; skipping",
-                        path
-                    );
+                if path.extension().map_or(false, |e| e == "json") {
+                    match Self::load_manifest_model(&path, models_path) {
+                        Ok(model) => {
+                            tracing::info!("Loaded ONNX model '{}' from {:?}", model.descriptor().name, path);
+                            models.push(model);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Skipping manifest {:?}: {}", path, e);
+                        }
+                    }
                 }
             }
         } else {
@@ -67,8 +77,39 @@ impl AutoEnhanceService {
         }
 
         tracing::info!("AutoEnhanceService loaded {} models", models.len());
-        let _ = &mut models; // suppress unused mut if no ONNX
         Self { models }
+    }
+
+    fn load_manifest_model(
+        manifest_path: &Path,
+        models_dir: &Path,
+    ) -> Result<Arc<dyn EnhanceModel>, String> {
+        let json_str = std::fs::read_to_string(manifest_path)
+            .map_err(|e| format!("Failed to read manifest: {}", e))?;
+        let manifest: ModelManifest = serde_json::from_str(&json_str)
+            .map_err(|e| format!("Failed to parse manifest: {}", e))?;
+
+        let onnx_path = models_dir.join(&manifest.file);
+        if !onnx_path.exists() {
+            return Err(format!("ONNX file '{}' not found", manifest.file));
+        }
+
+        let variant = match manifest.adapter.as_str() {
+            "nima_aesthetic" => NimaVariant::Aesthetic,
+            "nima_technical" => NimaVariant::Technical,
+            other => return Err(format!("Unknown adapter type: {}", other)),
+        };
+
+        let session = ort::session::Session::builder()
+            .and_then(|b| b.with_intra_threads(2))
+            .and_then(|b| b.commit_from_file(&onnx_path))
+            .map_err(|e| format!("Failed to load ONNX session: {}", e))?;
+
+        Ok(Arc::new(NimaAutoFix {
+            session: parking_lot::Mutex::new(session),
+            variant,
+            manifest,
+        }))
     }
 
     pub fn list_models(&self) -> Vec<ModelDescriptor> {
@@ -247,6 +288,7 @@ impl EnhanceModel for BuiltinAutoFix {
             version: "1.0.0".to_string(),
             builtin: true,
             requires_api_key: false,
+            publisher: None,
         }
     }
 
@@ -343,23 +385,24 @@ impl EnhanceModel for BuiltinAutoFix {
 }
 
 // ---------------------------------------------------------------------------
-// Gemini AI model: sends image to Gemini vision API
+// Claude AI model: sends image to Anthropic Messages API with vision
 // ---------------------------------------------------------------------------
 
-struct GeminiAutoFix;
+struct ClaudeAutoFix;
 
 #[async_trait]
-impl EnhanceModel for GeminiAutoFix {
+impl EnhanceModel for ClaudeAutoFix {
     fn descriptor(&self) -> ModelDescriptor {
         ModelDescriptor {
-            id: "gemini".to_string(),
-            name: "Gemini AI".to_string(),
-            description: "AI-powered analysis using Google Gemini vision — requires API key"
+            id: "claude".to_string(),
+            name: "Claude AI".to_string(),
+            description: "AI-powered analysis using Claude vision — requires API key"
                 .to_string(),
             kind: EnhanceModelKind::ParameterPredictor,
             version: "1.0.0".to_string(),
             builtin: false,
             requires_api_key: true,
+            publisher: Some("Anthropic".to_string()),
         }
     }
 
@@ -374,7 +417,7 @@ impl EnhanceModel for GeminiAutoFix {
         ctx: &RunContext,
     ) -> Result<EnhanceResult, AppError> {
         let api_key = ctx
-            .api_key
+            .anthropic_key
             .as_deref()
             .ok_or(AppError::AiInvalidKey)?;
 
@@ -387,11 +430,8 @@ impl EnhanceModel for GeminiAutoFix {
             jpeg_buf.into_inner(),
         );
 
-        let gemini_model = &ctx.config.gemini_model;
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            gemini_model, api_key
-        );
+        let claude_model = &ctx.config.claude_model;
+        let url = "https://api.anthropic.com/v1/messages";
 
         let prompt = r#"Analyze this photograph and recommend optimal development parameters.
 Return ONLY a JSON object with numeric values for these keys:
@@ -410,32 +450,37 @@ Return ONLY a JSON object with numeric values for these keys:
 - texture (-100 to 100)"#;
 
         let body = serde_json::json!({
-            "contents": [{
-                "parts": [
+            "model": claude_model,
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [
                     {
-                        "inlineData": {
-                            "mimeType": "image/jpeg",
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
                             "data": b64
                         }
                     },
                     {
+                        "type": "text",
                         "text": prompt
                     }
                 ]
-            }],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseModalities": ["TEXT"]
-            }
+            }]
         });
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(&url)
+            .post(url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| AppError::AutoEnhanceError(format!("Gemini request failed: {}", e)))?;
+            .map_err(|e| AppError::AutoEnhanceError(format!("Claude request failed: {}", e)))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -452,7 +497,7 @@ Return ONLY a JSON object with numeric values for these keys:
                 return Err(AppError::AiQuotaExceeded);
             }
             return Err(AppError::AutoEnhanceError(format!(
-                "Gemini API error {}: {}",
+                "Claude API error {}: {}",
                 status, text
             )));
         }
@@ -460,19 +505,30 @@ Return ONLY a JSON object with numeric values for these keys:
         let resp_json: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to parse Gemini response: {}", e)))?;
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to parse Claude response: {}", e)))?;
 
-        // Extract text from candidates[0].content.parts[0].text
+        // Extract text from content[0].text
         let text = resp_json
-            .pointer("/candidates/0/content/parts/0/text")
+            .pointer("/content/0/text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                AppError::AutoEnhanceError("No text in Gemini response".to_string())
+                AppError::AutoEnhanceError("No text in Claude response".to_string())
             })?;
 
-        let parsed: HashMap<String, f64> = serde_json::from_str(text).map_err(|e| {
+        // Strip markdown code fences if present
+        let json_str = text
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| text.trim().strip_prefix("```"))
+            .unwrap_or(text)
+            .trim()
+            .strip_suffix("```")
+            .unwrap_or(text)
+            .trim();
+
+        let parsed: HashMap<String, f64> = serde_json::from_str(json_str).map_err(|e| {
             AppError::AutoEnhanceError(format!(
-                "Failed to parse Gemini JSON: {} — raw: {}",
+                "Failed to parse Claude JSON: {} — raw: {}",
                 e, text
             ))
         })?;
@@ -483,4 +539,247 @@ Return ONLY a JSON object with numeric values for these keys:
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+// ---------------------------------------------------------------------------
+// Model manifest (deserialized from JSON sidecar)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelManifest {
+    id: String,
+    name: String,
+    publisher: String,
+    description: String,
+    adapter: String,
+    file: String,
+    input_size: [u32; 2],
+    normalize: NormalizeConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NormalizeConfig {
+    mean: [f32; 3],
+    std: [f32; 3],
+}
+
+// ---------------------------------------------------------------------------
+// NIMA CNN provider
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+enum NimaVariant {
+    Aesthetic,
+    Technical,
+}
+
+struct NimaAutoFix {
+    session: parking_lot::Mutex<ort::session::Session>,
+    variant: NimaVariant,
+    manifest: ModelManifest,
+}
+
+#[async_trait]
+impl EnhanceModel for NimaAutoFix {
+    fn descriptor(&self) -> ModelDescriptor {
+        ModelDescriptor {
+            id: self.manifest.id.clone(),
+            name: self.manifest.name.clone(),
+            description: self.manifest.description.clone(),
+            kind: EnhanceModelKind::ParameterPredictor,
+            version: "1.0.0".to_string(),
+            builtin: false,
+            requires_api_key: false,
+            publisher: Some(self.manifest.publisher.clone()),
+        }
+    }
+
+    fn requires_api_key(&self) -> bool {
+        false
+    }
+
+    async fn run(
+        &self,
+        img: &DynamicImage,
+        stats: &ImageStats,
+        _ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError> {
+        // Preprocess image for ONNX model
+        let input_tensor =
+            preprocess_for_onnx(img, self.manifest.input_size, &self.manifest.normalize);
+
+        // Run inference
+        let input_value = ort::value::Tensor::from_array(input_tensor).map_err(|e| {
+            AppError::AutoEnhanceError(format!("Failed to create ONNX input tensor: {}", e))
+        })?;
+        let probs: Vec<f32> = {
+            let mut session = self.session.lock();
+            let outputs = session
+                .run(ort::inputs![input_value])
+                .map_err(|e| {
+                    AppError::AutoEnhanceError(format!("ONNX inference failed: {}", e))
+                })?;
+            let (_shape, data) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| {
+                    AppError::AutoEnhanceError(format!("Failed to extract ONNX output: {}", e))
+                })?;
+            data.to_vec()
+        };
+
+        // Compute mean score (weighted sum: scores 1–10)
+        let mean_score: f32 = probs
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| (i as f32 + 1.0) * p)
+            .sum();
+
+        tracing::info!(
+            "NIMA {:?} score: {:.2} (from {} classes)",
+            self.variant,
+            mean_score,
+            probs.len()
+        );
+
+        // Compute correction strength: score >= 6 → ~0, score = 2 → 1.0
+        let correction_strength = ((6.0_f32 - mean_score) / 4.0_f32).clamp(0.0_f32, 1.0_f32) as f64;
+
+        // Apply heuristic mapping scaled by correction_strength
+        let params = match self.variant {
+            NimaVariant::Aesthetic => nima_aesthetic_params(stats, correction_strength),
+            NimaVariant::Technical => nima_technical_params(stats, correction_strength),
+        };
+
+        Ok(EnhanceResult::Parameters { values: params })
+    }
+}
+
+/// Preprocess an image for ONNX inference: resize, normalize, return NCHW tensor.
+fn preprocess_for_onnx(
+    img: &DynamicImage,
+    size: [u32; 2],
+    norm: &NormalizeConfig,
+) -> Array4<f32> {
+    let resized = img.resize_exact(size[0], size[1], image::imageops::FilterType::Triangle);
+    let rgb = resized.to_rgb8();
+
+    let (w, h) = (size[0] as usize, size[1] as usize);
+    let mut tensor = Array4::<f32>::zeros((1, 3, h, w));
+
+    for y in 0..h {
+        for x in 0..w {
+            let pixel = rgb.get_pixel(x as u32, y as u32);
+            for c in 0..3 {
+                let val = pixel[c] as f32 / 255.0;
+                tensor[[0, c, y, x]] = (val - norm.mean[c]) / norm.std[c];
+            }
+        }
+    }
+
+    tensor
+}
+
+/// Aesthetic NIMA: biases toward vibrance, saturation, contrast, temperature/tint.
+fn nima_aesthetic_params(stats: &ImageStats, strength: f64) -> HashMap<String, f64> {
+    let mut params = HashMap::new();
+
+    // Vibrance
+    let target_sat = 0.30;
+    let vibrance = ((target_sat - stats.saturation_mean) / target_sat * 40.0).clamp(-20.0, 40.0);
+    if (vibrance * strength).abs() > 1.0 {
+        params.insert("vibrance".to_string(), round2(vibrance * strength));
+    }
+
+    // Saturation (lighter touch)
+    let saturation = ((target_sat - stats.saturation_mean) / target_sat * 20.0).clamp(-15.0, 25.0);
+    if (saturation * strength).abs() > 1.0 {
+        params.insert("saturation".to_string(), round2(saturation * strength));
+    }
+
+    // Contrast
+    let target_stddev = 0.18;
+    let contrast =
+        ((target_stddev - stats.stddev_luminance) / target_stddev * 50.0).clamp(-30.0, 40.0);
+    if (contrast * strength).abs() > 2.0 {
+        params.insert("contrast".to_string(), round2(contrast * strength));
+    }
+
+    // Temperature (white balance)
+    let avg = (stats.r_mean + stats.g_mean + stats.b_mean) / 3.0;
+    if avg > 0.01 {
+        let rb_ratio = stats.r_mean / stats.b_mean.max(0.001);
+        let temp = (5500.0 / rb_ratio).clamp(3000.0, 9000.0);
+        let temp_delta = temp - 5500.0;
+        if (temp_delta * strength).abs() > 100.0 {
+            params.insert(
+                "temperature".to_string(),
+                round2(5500.0 + temp_delta * strength),
+            );
+        }
+
+        // Tint
+        let rb_avg = (stats.r_mean + stats.b_mean) / 2.0;
+        let g_ratio = stats.g_mean / rb_avg.max(0.001);
+        let tint = ((g_ratio - 1.0) * 80.0).clamp(-50.0, 50.0);
+        if (tint * strength).abs() > 2.0 {
+            params.insert("tint".to_string(), round2(tint * strength));
+        }
+    }
+
+    params
+}
+
+/// Technical NIMA: biases toward exposure, highlights, shadows, whites, blacks, clarity, dehaze.
+fn nima_technical_params(stats: &ImageStats, strength: f64) -> HashMap<String, f64> {
+    let mut params = HashMap::new();
+
+    // Exposure
+    let target_median = 0.45;
+    let exposure_ev =
+        ((target_median / stats.median_luminance.max(0.01)).ln()) / (2.0_f64.ln());
+    let exposure = exposure_ev.clamp(-3.0, 3.0);
+    if (exposure * strength).abs() > 0.05 {
+        params.insert("exposure".to_string(), round2(exposure * strength));
+    }
+
+    // Highlights
+    if stats.highlight_clip_pct > 0.5 {
+        let highlights = (-stats.highlight_clip_pct * 10.0).clamp(-100.0, 0.0);
+        params.insert("highlights".to_string(), round2(highlights * strength));
+    }
+
+    // Shadows
+    if stats.shadow_clip_pct > 0.5 {
+        let shadows = (stats.shadow_clip_pct * 10.0).clamp(0.0, 100.0);
+        params.insert("shadows".to_string(), round2(shadows * strength));
+    }
+
+    // Whites
+    let whites = ((0.90 - stats.percentile_95) * 200.0).clamp(-60.0, 60.0);
+    if (whites * strength).abs() > 3.0 {
+        params.insert("whites".to_string(), round2(whites * strength));
+    }
+
+    // Blacks
+    let blacks = ((stats.percentile_5 - 0.10) * 200.0).clamp(-60.0, 60.0);
+    if (blacks * strength).abs() > 3.0 {
+        params.insert("blacks".to_string(), round2(blacks * strength));
+    }
+
+    // Clarity
+    let clarity = ((0.20 - stats.stddev_luminance) / 0.20 * 30.0).clamp(0.0, 35.0);
+    if clarity * strength > 3.0 {
+        params.insert("clarity".to_string(), round2(clarity * strength));
+    }
+
+    // Dehaze
+    let haze_indicator = (stats.percentile_5 - 0.05).max(0.0) * 5.0
+        + (0.15 - stats.stddev_luminance).max(0.0) * 3.0;
+    let dehaze = (haze_indicator * 40.0).clamp(0.0, 40.0);
+    if dehaze * strength > 3.0 {
+        params.insert("dehaze".to_string(), round2(dehaze * strength));
+    }
+
+    params
 }

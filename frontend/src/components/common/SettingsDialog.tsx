@@ -23,11 +23,13 @@ interface Props {
 export function SettingsDialog({ onDismiss }: Props) {
   const {
     geminiApiKey,
+    anthropicApiKey,
     keyMode,
     redactPrompts,
     colorSpace,
     stripLocationOnExport,
     setGeminiApiKey,
+    setAnthropicApiKey,
     setKeyMode,
     setRedactPrompts,
     setColorSpace,
@@ -35,9 +37,11 @@ export function SettingsDialog({ onDismiss }: Props) {
   } = useSettingsStore();
 
   const [keyInput, setKeyInput] = useState(geminiApiKey ?? '');
+  const [anthropicKeyInput, setAnthropicKeyInput] = useState(anthropicApiKey ?? '');
 
-  const handleSaveKey = () => {
+  const handleSaveKeys = () => {
     setGeminiApiKey(keyInput || null);
+    setAnthropicApiKey(anthropicKeyInput || null);
   };
 
   return (
@@ -47,6 +51,16 @@ export function SettingsDialog({ onDismiss }: Props) {
           <DialogTitle>Settings</DialogTitle>
           <DialogContent>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <Field label="Anthropic API Key">
+                <Input
+                  type="password"
+                  value={anthropicKeyInput}
+                  onChange={(_, data) => setAnthropicKeyInput(data.value)}
+                  placeholder="Enter your Anthropic API key"
+                  style={{ width: '100%' }}
+                />
+              </Field>
+
               <Field label="Gemini API Key">
                 <Input
                   type="password"
@@ -92,7 +106,7 @@ export function SettingsDialog({ onDismiss }: Props) {
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onDismiss}>Cancel</Button>
-            <Button appearance="primary" onClick={() => { handleSaveKey(); onDismiss(); }}>
+            <Button appearance="primary" onClick={() => { handleSaveKeys(); onDismiss(); }}>
               Save
             </Button>
           </DialogActions>

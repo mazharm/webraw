@@ -18,6 +18,8 @@ pub struct ModelDescriptor {
     pub version: String,
     pub builtin: bool,
     pub requires_api_key: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

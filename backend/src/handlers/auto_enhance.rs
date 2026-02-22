@@ -54,18 +54,23 @@ pub async fn run_auto_enhance(
         .get_model(&req.model_id)
         .ok_or_else(|| AppError::ModelNotFound(req.model_id.clone()))?;
 
-    // Extract optional API key from header
+    // Extract optional API keys from headers
     let api_key = headers
         .get("X-Gemini-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let anthropic_key = headers
+        .get("X-Anthropic-Key")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
     // Validate: if the model requires an API key, ensure one was provided
     if model.requires_api_key() {
-        match &api_key {
-            None => return Err(AppError::AiInvalidKey),
-            Some(k) if k.trim().is_empty() => return Err(AppError::AiInvalidKey),
-            _ => {}
+        let has_key = [&api_key, &anthropic_key]
+            .iter()
+            .any(|k| matches!(k, Some(v) if !v.trim().is_empty()));
+        if !has_key {
+            return Err(AppError::AiInvalidKey);
         }
     }
 
@@ -89,6 +94,7 @@ pub async fn run_auto_enhance(
                 let stats = compute_image_stats(&img);
                 let ctx = RunContext {
                     api_key,
+                    anthropic_key,
                     config: state_clone.config.clone(),
                 };
                 match model.run(&img, &stats, &ctx).await {

@@ -184,13 +184,16 @@ export async function listEnhanceModels(): Promise<{ models: EnhanceModelDescrip
 export async function runAutoEnhance(
   fileId: string,
   modelId: string,
-  options?: { strength?: number; signal?: AbortSignal; apiKey?: string }
+  options?: { strength?: number; signal?: AbortSignal; apiKey?: string; anthropicApiKey?: string }
 ): Promise<{ jobId: string }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   if (options?.apiKey) {
     headers['X-Gemini-Key'] = options.apiKey;
+  }
+  if (options?.anthropicApiKey) {
+    headers['X-Anthropic-Key'] = options.anthropicApiKey;
   }
   return apiJson('/auto-enhance/run', {
     method: 'POST',

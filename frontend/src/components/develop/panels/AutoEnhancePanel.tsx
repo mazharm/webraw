@@ -22,6 +22,7 @@ export function AutoEnhancePanel() {
   const pushHistory = useEditStore(s => s.pushHistory);
   const activeAsset = useLibraryStore(s => s.assets.find(a => a.id === s.activeAssetId));
   const geminiApiKey = useSettingsStore(s => s.geminiApiKey);
+  const anthropicApiKey = useSettingsStore(s => s.anthropicApiKey);
 
   const [models, setModels] = useState<EnhanceModelDescriptor[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>('builtin');
@@ -81,6 +82,7 @@ export function AutoEnhancePanel() {
     try {
       const { jobId } = await runAutoEnhance(activeAsset.fileId, selectedModelId, {
         apiKey: geminiApiKey ?? undefined,
+        anthropicApiKey: anthropicApiKey ?? undefined,
       });
       const job = await pollJob(jobId);
 
@@ -114,7 +116,11 @@ export function AutoEnhancePanel() {
   if (!editState) return null;
 
   const selectedModel = models.find(m => m.id === selectedModelId);
-  const needsKey = selectedModel?.requiresApiKey && !geminiApiKey;
+  const needsKey = selectedModel?.requiresApiKey && (
+    selectedModel.id === 'claude'
+      ? !anthropicApiKey
+      : !geminiApiKey
+  );
 
   return (
     <PanelSection title="Auto Fix" defaultOpen>
@@ -139,6 +145,17 @@ export function AutoEnhancePanel() {
               <Option key={m.id} value={m.id} text={m.name}>
                 <div>
                   <Text size={300} weight="semibold">{m.name}</Text>
+                  {m.publisher && (
+                    <Text
+                      size={200}
+                      style={{
+                        display: 'block',
+                        color: tokens.colorNeutralForeground4,
+                      }}
+                    >
+                      by {m.publisher}
+                    </Text>
+                  )}
                   <Text
                     size={200}
                     style={{
@@ -160,7 +177,7 @@ export function AutoEnhancePanel() {
             size={200}
             style={{ color: tokens.colorPaletteYellowForeground1 }}
           >
-            This provider requires a Gemini API key. Set it in Settings.
+            This provider requires {selectedModel?.id === 'claude' ? 'an Anthropic' : 'a Gemini'} API key. Set it in Settings.
           </Text>
         )}
 

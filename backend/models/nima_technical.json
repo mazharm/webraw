@@ -1,0 +1,13 @@
+{
+  "id": "nima-technical",
+  "name": "NIMA Technical",
+  "publisher": "Google Research",
+  "description": "Technical quality-guided auto fix using Neural Image Assessment",
+  "adapter": "nima_technical",
+  "file": "nima_technical.onnx",
+  "inputSize": [224, 224],
+  "normalize": {
+    "mean": [0.485, 0.456, 0.406],
+    "std": [0.229, 0.224, 0.225]
+  }
+}

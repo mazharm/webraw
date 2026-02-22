@@ -17,6 +17,7 @@ pub struct ModelDescriptor {
     pub kind: EnhanceModelKind,
     pub version: String,
     pub builtin: bool,
+    pub requires_api_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

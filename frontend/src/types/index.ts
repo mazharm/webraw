@@ -283,6 +283,7 @@ export interface EnhanceModelDescriptor {
   kind: EnhanceModelKind;
   version: string;
   builtin: boolean;
+  requiresApiKey: boolean;
 }
 
 export interface EnhanceResultParameters {

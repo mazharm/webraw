@@ -2839,6 +2839,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "async-stream",
+ "async-trait",
  "axum",
  "base64",
  "bytes",

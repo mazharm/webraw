@@ -1,11 +1,11 @@
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::models::auto_enhance::ModelDescriptor;
 use crate::models::error::AppError;
 use crate::models::jobs::JobKind;
-use crate::services::auto_enhance::compute_image_stats;
+use crate::services::auto_enhance::{compute_image_stats, RunContext};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -46,12 +46,28 @@ pub struct RunResponse {
 
 pub async fn run_auto_enhance(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, AppError> {
     let model = state
         .auto_enhance
         .get_model(&req.model_id)
         .ok_or_else(|| AppError::ModelNotFound(req.model_id.clone()))?;
+
+    // Extract optional API key from header
+    let api_key = headers
+        .get("X-Gemini-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Validate: if the model requires an API key, ensure one was provided
+    if model.requires_api_key() {
+        match &api_key {
+            None => return Err(AppError::AiInvalidKey),
+            Some(k) if k.trim().is_empty() => return Err(AppError::AiInvalidKey),
+            _ => {}
+        }
+    }
 
     let (job_id, job) = state.jobs.create_job(JobKind::AutoEnhance, None);
 
@@ -71,7 +87,11 @@ pub async fn run_auto_enhance(
         match img_result {
             Ok(img) => {
                 let stats = compute_image_stats(&img);
-                match model.run(&img, &stats) {
+                let ctx = RunContext {
+                    api_key,
+                    config: state_clone.config.clone(),
+                };
+                match model.run(&img, &stats, &ctx).await {
                     Ok(result) => {
                         let result_json = serde_json::to_value(&result).unwrap_or_default();
                         job.set_complete(result_json);

@@ -12,6 +12,7 @@ import { PaintBrushSparkle24Regular } from '@fluentui/react-icons';
 import { PanelSection } from '../../common/PanelSection';
 import { useEditStore } from '../../../stores/editStore';
 import { useLibraryStore } from '../../../stores/libraryStore';
+import { useSettingsStore } from '../../../stores/settingsStore';
 import { listEnhanceModels, runAutoEnhance, pollJob } from '../../../api/client';
 import type { EnhanceModelDescriptor, GlobalAdjustments } from '../../../types';
 
@@ -20,9 +21,10 @@ export function AutoEnhancePanel() {
   const updateGlobalPartial = useEditStore(s => s.updateGlobalPartial);
   const pushHistory = useEditStore(s => s.pushHistory);
   const activeAsset = useLibraryStore(s => s.assets.find(a => a.id === s.activeAssetId));
+  const geminiApiKey = useSettingsStore(s => s.geminiApiKey);
 
   const [models, setModels] = useState<EnhanceModelDescriptor[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState<string>('builtin-auto-all');
+  const [selectedModelId, setSelectedModelId] = useState<string>('builtin');
   const [strength, setStrength] = useState(100);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,11 +79,13 @@ export function AutoEnhancePanel() {
     originalRef.current = orig;
 
     try {
-      const { jobId } = await runAutoEnhance(activeAsset.fileId, selectedModelId);
+      const { jobId } = await runAutoEnhance(activeAsset.fileId, selectedModelId, {
+        apiKey: geminiApiKey ?? undefined,
+      });
       const job = await pollJob(jobId);
 
       if (job.status === 'FAILED') {
-        setError(job.error?.detail ?? 'Auto enhance failed');
+        setError(job.error?.detail ?? 'Auto fix failed');
         return;
       }
 
@@ -89,10 +93,10 @@ export function AutoEnhancePanel() {
       if (result?.type === 'Parameters' && result.values) {
         recommendedRef.current = result.values;
         applyInterpolated(result.values, orig, strength);
-        pushHistory('Auto Enhance');
+        pushHistory('Auto Fix');
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Auto enhance failed');
+      setError(e instanceof Error ? e.message : 'Auto fix failed');
     } finally {
       setIsRunning(false);
     }
@@ -110,13 +114,17 @@ export function AutoEnhancePanel() {
   if (!editState) return null;
 
   const selectedModel = models.find(m => m.id === selectedModelId);
+  const needsKey = selectedModel?.requiresApiKey && !geminiApiKey;
 
   return (
-    <PanelSection title="Auto Enhance" defaultOpen={false}>
+    <PanelSection title="Auto Fix" defaultOpen>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {models.length > 1 && (
+        <div>
+          <Text size={200} weight="semibold" style={{ display: 'block', marginBottom: 4 }}>
+            Provider
+          </Text>
           <Dropdown
-            value={selectedModel?.name ?? 'Auto Enhance'}
+            value={selectedModel?.name ?? 'Loading...'}
             selectedOptions={[selectedModelId]}
             onOptionSelect={(_, data) => {
               if (data.optionValue) {
@@ -125,14 +133,35 @@ export function AutoEnhancePanel() {
                 recommendedRef.current = null;
               }
             }}
-            style={{ minWidth: 0 }}
+            style={{ minWidth: 0, width: '100%' }}
           >
             {models.map(m => (
               <Option key={m.id} value={m.id} text={m.name}>
-                {m.name}
+                <div>
+                  <Text size={300} weight="semibold">{m.name}</Text>
+                  <Text
+                    size={200}
+                    style={{
+                      display: 'block',
+                      color: tokens.colorNeutralForeground3,
+                      marginTop: 2,
+                    }}
+                  >
+                    {m.description}
+                  </Text>
+                </div>
               </Option>
             ))}
           </Dropdown>
+        </div>
+
+        {needsKey && (
+          <Text
+            size={200}
+            style={{ color: tokens.colorPaletteYellowForeground1 }}
+          >
+            This provider requires a Gemini API key. Set it in Settings.
+          </Text>
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -155,10 +184,10 @@ export function AutoEnhancePanel() {
           appearance="primary"
           icon={<PaintBrushSparkle24Regular />}
           onClick={handleRun}
-          disabled={isRunning || !activeAsset?.fileId}
+          disabled={isRunning || !activeAsset?.fileId || needsKey}
           style={{ width: '100%' }}
         >
-          {isRunning ? <Spinner size="tiny" /> : 'Auto Enhance'}
+          {isRunning ? <Spinner size="tiny" /> : 'Auto Fix'}
         </Button>
 
         {error && (

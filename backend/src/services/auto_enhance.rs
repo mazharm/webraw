@@ -1,20 +1,39 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use image::{DynamicImage, GenericImageView};
+use async_trait::async_trait;
+use image::DynamicImage;
+use image::GenericImageView;
 
 use crate::models::auto_enhance::{
     EnhanceModelKind, EnhanceResult, ImageStats, ModelDescriptor,
 };
+use crate::models::config::AppConfig;
 use crate::models::error::AppError;
+
+// ---------------------------------------------------------------------------
+// RunContext — passed to every model run
+// ---------------------------------------------------------------------------
+
+pub struct RunContext {
+    pub api_key: Option<String>,
+    pub config: Arc<AppConfig>,
+}
 
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
 
+#[async_trait]
 pub trait EnhanceModel: Send + Sync {
     fn descriptor(&self) -> ModelDescriptor;
-    fn run(&self, img: &DynamicImage, stats: &ImageStats) -> Result<EnhanceResult, AppError>;
+    fn requires_api_key(&self) -> bool;
+    async fn run(
+        &self,
+        img: &DynamicImage,
+        stats: &ImageStats,
+        ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,9 +47,8 @@ pub struct AutoEnhanceService {
 impl AutoEnhanceService {
     pub fn new(models_dir: &str) -> Self {
         let mut models: Vec<Arc<dyn EnhanceModel>> = vec![
-            Arc::new(BuiltinAutoExposure),
-            Arc::new(BuiltinAutoColor),
-            Arc::new(BuiltinAutoAll),
+            Arc::new(BuiltinAutoFix),
+            Arc::new(GeminiAutoFix),
         ];
 
         // Scan for ONNX models (future expansion)
@@ -213,116 +231,111 @@ fn zero_stats() -> ImageStats {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in model: Auto Exposure
+// Built-in model: Auto Fix (exposure + color + detail in one)
 // ---------------------------------------------------------------------------
 
-struct BuiltinAutoExposure;
+struct BuiltinAutoFix;
 
-impl EnhanceModel for BuiltinAutoExposure {
+#[async_trait]
+impl EnhanceModel for BuiltinAutoFix {
     fn descriptor(&self) -> ModelDescriptor {
         ModelDescriptor {
-            id: "builtin-auto-exposure".to_string(),
-            name: "Auto Exposure".to_string(),
-            description: "Adjusts exposure, contrast, highlights, shadows, whites, and blacks based on histogram analysis".to_string(),
+            id: "builtin".to_string(),
+            name: "Built-in (Algorithmic)".to_string(),
+            description: "One-click fix: exposure, contrast, white balance, vibrance, clarity, and dehaze — no API key needed".to_string(),
             kind: EnhanceModelKind::ParameterPredictor,
             version: "1.0.0".to_string(),
             builtin: true,
+            requires_api_key: false,
         }
     }
 
-    fn run(&self, _img: &DynamicImage, stats: &ImageStats) -> Result<EnhanceResult, AppError> {
+    fn requires_api_key(&self) -> bool {
+        false
+    }
+
+    async fn run(
+        &self,
+        _img: &DynamicImage,
+        stats: &ImageStats,
+        _ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError> {
         let mut params = HashMap::new();
 
-        // Target median luminance ~0.45
+        // --- Exposure ---
         let target_median = 0.45;
-        let exposure_ev = ((target_median / stats.median_luminance.max(0.01)).ln()) / (2.0_f64.ln());
+        let exposure_ev =
+            ((target_median / stats.median_luminance.max(0.01)).ln()) / (2.0_f64.ln());
         let exposure = exposure_ev.clamp(-3.0, 3.0);
         params.insert("exposure".to_string(), round2(exposure));
 
-        // Contrast from stddev — low stddev means flat, needs more contrast
+        // --- Contrast ---
         let target_stddev = 0.18;
-        let contrast = ((target_stddev - stats.stddev_luminance) / target_stddev * 50.0).clamp(-30.0, 40.0);
+        let contrast =
+            ((target_stddev - stats.stddev_luminance) / target_stddev * 50.0).clamp(-30.0, 40.0);
         params.insert("contrast".to_string(), round2(contrast));
 
-        // Recover clipped highlights
+        // --- Highlights ---
         if stats.highlight_clip_pct > 0.5 {
             let highlights = (-stats.highlight_clip_pct * 10.0).clamp(-100.0, 0.0);
             params.insert("highlights".to_string(), round2(highlights));
         }
 
-        // Open up clipped shadows
+        // --- Shadows ---
         if stats.shadow_clip_pct > 0.5 {
             let shadows = (stats.shadow_clip_pct * 10.0).clamp(0.0, 100.0);
             params.insert("shadows".to_string(), round2(shadows));
         }
 
-        // Whites from 95th percentile
+        // --- Whites ---
         let whites = ((0.90 - stats.percentile_95) * 200.0).clamp(-60.0, 60.0);
         if whites.abs() > 5.0 {
             params.insert("whites".to_string(), round2(whites));
         }
 
-        // Blacks from 5th percentile
+        // --- Blacks ---
         let blacks = ((stats.percentile_5 - 0.10) * 200.0).clamp(-60.0, 60.0);
         if blacks.abs() > 5.0 {
             params.insert("blacks".to_string(), round2(blacks));
         }
 
-        Ok(EnhanceResult::Parameters { values: params })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Built-in model: Auto Color
-// ---------------------------------------------------------------------------
-
-struct BuiltinAutoColor;
-
-impl EnhanceModel for BuiltinAutoColor {
-    fn descriptor(&self) -> ModelDescriptor {
-        ModelDescriptor {
-            id: "builtin-auto-color".to_string(),
-            name: "Auto Color".to_string(),
-            description: "Corrects white balance and adjusts vibrance using gray-world assumption"
-                .to_string(),
-            kind: EnhanceModelKind::ParameterPredictor,
-            version: "1.0.0".to_string(),
-            builtin: true,
-        }
-    }
-
-    fn run(&self, _img: &DynamicImage, stats: &ImageStats) -> Result<EnhanceResult, AppError> {
-        let mut params = HashMap::new();
-
-        // Gray-world white balance: if scene average should be neutral gray,
-        // R/B ratio tells us the color temperature shift
+        // --- Temperature (white balance) ---
         let avg = (stats.r_mean + stats.g_mean + stats.b_mean) / 3.0;
         if avg > 0.01 {
-            // Temperature: R>B means warm scene → cool the temperature down; R<B means cool scene → warm up
             let rb_ratio = stats.r_mean / stats.b_mean.max(0.001);
-            // Map ratio to Kelvin offset from 5500K baseline
-            // ratio ~1.0 → 5500K, ratio > 1 → lower K, ratio < 1 → higher K
             let temp = (5500.0 / rb_ratio).clamp(3000.0, 9000.0);
             if (temp - 5500.0).abs() > 200.0 {
                 params.insert("temperature".to_string(), round2(temp));
             }
 
-            // Tint: G imbalance relative to R+B average
             let rb_avg = (stats.r_mean + stats.b_mean) / 2.0;
             let g_ratio = stats.g_mean / rb_avg.max(0.001);
-            // g_ratio > 1 → green cast → push tint positive (magenta)
-            // g_ratio < 1 → magenta cast → push tint negative (green)
             let tint = ((g_ratio - 1.0) * 80.0).clamp(-50.0, 50.0);
             if tint.abs() > 3.0 {
                 params.insert("tint".to_string(), round2(tint));
             }
         }
 
-        // Vibrance: boost if saturation is low, reduce if oversaturated
+        // --- Vibrance ---
         let target_sat = 0.30;
-        let vibrance = ((target_sat - stats.saturation_mean) / target_sat * 40.0).clamp(-20.0, 40.0);
+        let vibrance =
+            ((target_sat - stats.saturation_mean) / target_sat * 40.0).clamp(-20.0, 40.0);
         if vibrance.abs() > 3.0 {
             params.insert("vibrance".to_string(), round2(vibrance));
+        }
+
+        // --- Clarity (boost mid-tone contrast when image is flat) ---
+        let clarity = ((0.20 - stats.stddev_luminance) / 0.20 * 30.0).clamp(0.0, 35.0);
+        if clarity > 5.0 {
+            params.insert("clarity".to_string(), round2(clarity));
+        }
+
+        // --- Dehaze (simple heuristic: low-contrast + elevated blacks → hazy) ---
+        let haze_indicator = (stats.percentile_5 - 0.05).max(0.0) * 5.0
+            + (0.15 - stats.stddev_luminance).max(0.0) * 3.0;
+        let dehaze = (haze_indicator * 40.0).clamp(0.0, 40.0);
+        if dehaze > 5.0 {
+            params.insert("dehaze".to_string(), round2(dehaze));
         }
 
         Ok(EnhanceResult::Parameters { values: params })
@@ -330,40 +343,141 @@ impl EnhanceModel for BuiltinAutoColor {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in model: Auto All (combines exposure + color)
+// Gemini AI model: sends image to Gemini vision API
 // ---------------------------------------------------------------------------
 
-struct BuiltinAutoAll;
+struct GeminiAutoFix;
 
-impl EnhanceModel for BuiltinAutoAll {
+#[async_trait]
+impl EnhanceModel for GeminiAutoFix {
     fn descriptor(&self) -> ModelDescriptor {
         ModelDescriptor {
-            id: "builtin-auto-all".to_string(),
-            name: "Auto Enhance".to_string(),
-            description: "One-click enhancement: auto exposure, contrast, white balance, and vibrance"
+            id: "gemini".to_string(),
+            name: "Gemini AI".to_string(),
+            description: "AI-powered analysis using Google Gemini vision — requires API key"
                 .to_string(),
             kind: EnhanceModelKind::ParameterPredictor,
             version: "1.0.0".to_string(),
-            builtin: true,
+            builtin: false,
+            requires_api_key: true,
         }
     }
 
-    fn run(&self, img: &DynamicImage, stats: &ImageStats) -> Result<EnhanceResult, AppError> {
-        let exposure_model = BuiltinAutoExposure;
-        let color_model = BuiltinAutoColor;
+    fn requires_api_key(&self) -> bool {
+        true
+    }
 
-        let exposure_result = exposure_model.run(img, stats)?;
-        let color_result = color_model.run(img, stats)?;
+    async fn run(
+        &self,
+        img: &DynamicImage,
+        _stats: &ImageStats,
+        ctx: &RunContext,
+    ) -> Result<EnhanceResult, AppError> {
+        let api_key = ctx
+            .api_key
+            .as_deref()
+            .ok_or(AppError::AiInvalidKey)?;
 
-        let mut combined = HashMap::new();
-        if let EnhanceResult::Parameters { values } = exposure_result {
-            combined.extend(values);
+        // Encode image as JPEG base64
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to encode proxy JPEG: {}", e)))?;
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            jpeg_buf.into_inner(),
+        );
+
+        let gemini_model = &ctx.config.gemini_model;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            gemini_model, api_key
+        );
+
+        let prompt = r#"Analyze this photograph and recommend optimal development parameters.
+Return ONLY a JSON object with numeric values for these keys:
+- exposure (-5 to 5, EV stops)
+- contrast (-100 to 100)
+- highlights (-100 to 100)
+- shadows (-100 to 100)
+- whites (-100 to 100)
+- blacks (-100 to 100)
+- temperature (2000 to 50000, Kelvin)
+- tint (-150 to 150)
+- vibrance (-100 to 100)
+- saturation (-100 to 100)
+- clarity (-100 to 100)
+- dehaze (-100 to 100)
+- texture (-100 to 100)"#;
+
+        let body = serde_json::json!({
+            "contents": [{
+                "parts": [
+                    {
+                        "inlineData": {
+                            "mimeType": "image/jpeg",
+                            "data": b64
+                        }
+                    },
+                    {
+                        "text": prompt
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseModalities": ["TEXT"]
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("Gemini request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                return Err(AppError::AiInvalidKey);
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(AppError::AiQuotaExceeded);
+            }
+            return Err(AppError::AutoEnhanceError(format!(
+                "Gemini API error {}: {}",
+                status, text
+            )));
         }
-        if let EnhanceResult::Parameters { values } = color_result {
-            combined.extend(values);
-        }
 
-        Ok(EnhanceResult::Parameters { values: combined })
+        let resp_json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::AutoEnhanceError(format!("Failed to parse Gemini response: {}", e)))?;
+
+        // Extract text from candidates[0].content.parts[0].text
+        let text = resp_json
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AppError::AutoEnhanceError("No text in Gemini response".to_string())
+            })?;
+
+        let parsed: HashMap<String, f64> = serde_json::from_str(text).map_err(|e| {
+            AppError::AutoEnhanceError(format!(
+                "Failed to parse Gemini JSON: {} — raw: {}",
+                e, text
+            ))
+        })?;
+
+        Ok(EnhanceResult::Parameters { values: parsed })
     }
 }
 

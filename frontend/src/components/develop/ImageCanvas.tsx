@@ -14,17 +14,8 @@ export function ImageCanvas({ previewUrl, isLoading }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const imageRef = useRef<HTMLImageElement | null>(null);
-
-  useEffect(() => {
-    if (!previewUrl) return;
-
-    const img = new Image();
-    img.onload = () => {
-      imageRef.current = img;
-      drawImage();
-    };
-    img.src = previewUrl;
-  }, [previewUrl]);
+  // Use a ref for drawImage so async callbacks (img.onload) always get the latest version
+  const drawImageRef = useRef<() => void>(() => {});
 
   const drawImage = useCallback(() => {
     const canvas = canvasRef.current;
@@ -60,15 +51,33 @@ export function ImageCanvas({ previewUrl, isLoading }: Props) {
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
   }, [zoom, pan]);
 
+  // Keep the ref in sync with the latest drawImage
+  drawImageRef.current = drawImage;
+
+  // Load and draw when previewUrl changes
+  useEffect(() => {
+    if (!previewUrl) return;
+
+    const img = new Image();
+    img.onload = () => {
+      imageRef.current = img;
+      // Call via ref to always get the latest drawImage (correct zoom/pan)
+      drawImageRef.current();
+    };
+    img.src = previewUrl;
+  }, [previewUrl]);
+
+  // Redraw when zoom/pan changes
   useEffect(() => {
     drawImage();
   }, [drawImage]);
 
+  // Redraw on container resize
   useEffect(() => {
-    const observer = new ResizeObserver(() => drawImage());
+    const observer = new ResizeObserver(() => drawImageRef.current());
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [drawImage]);
+  }, []);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();

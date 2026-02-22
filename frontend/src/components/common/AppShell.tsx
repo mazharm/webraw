@@ -33,6 +33,7 @@ export function AppShell() {
   const { undo, redo, canUndo, canRedo } = useEditStore();
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImport = useCallback(async () => {
@@ -45,8 +46,10 @@ export function AppShell() {
 
     const fileArray = Array.from(files);
     setImportProgress({ current: 0, total: fileArray.length });
+    setImportError(null);
 
     const newAssets: Asset[] = [];
+    const errors: string[] = [];
     for (let i = 0; i < fileArray.length; i++) {
       const file = fileArray[i];
       try {
@@ -71,12 +74,19 @@ export function AppShell() {
           fileId: result.fileId,
           thumbnailUrl,
         });
-      } catch (err) {
+      } catch (err: unknown) {
+        const detail = err && typeof err === 'object' && 'detail' in err
+          ? (err as { detail: string }).detail
+          : String(err);
         console.error(`Failed to import ${file.name}:`, err);
+        errors.push(`${file.name}: ${detail}`);
       }
       setImportProgress({ current: i + 1, total: fileArray.length });
     }
 
+    if (errors.length > 0) {
+      setImportError(`Import failed: ${errors.join('; ')}`);
+    }
     addAssets(newAssets);
     setImportProgress(null);
     e.target.value = '';
@@ -152,6 +162,15 @@ export function AppShell() {
         <MessageBar intent="warning" style={{ flexShrink: 0 }}>
           <MessageBarBody>
             Backend service unavailable — some editing features are disabled.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+
+      {/* Import error banner */}
+      {importError && (
+        <MessageBar intent="error" style={{ flexShrink: 0 }}>
+          <MessageBarBody>
+            {importError}
           </MessageBarBody>
         </MessageBar>
       )}

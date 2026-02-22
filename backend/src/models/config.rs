@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub log_level: String,
     pub sse_timeout_secs: u64,
     pub idempotency_ttl_secs: u64,
+    pub models_dir: String,
 }
 
 impl AppConfig {
@@ -25,7 +26,7 @@ impl AppConfig {
         Self {
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             allowed_origins: env::var("ALLOWED_ORIGINS")
-                .unwrap_or_else(|_| "http://localhost:5173,http://localhost:3000".to_string())
+                .unwrap_or_else(|_| "http://localhost:5173,http://localhost:5174,http://localhost:3000".to_string())
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .collect(),
@@ -76,6 +77,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(600),
+            models_dir: env::var("MODELS_DIR").unwrap_or_else(|_| "./models".to_string()),
         }
     }
 }

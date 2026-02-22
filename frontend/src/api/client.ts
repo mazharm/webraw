@@ -1,4 +1,4 @@
-import type { EditState, JobInfo, ProblemDetail, HistogramData } from '../types';
+import type { EditState, JobInfo, ProblemDetail, HistogramData, EnhanceModelDescriptor } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api/v1';
 
@@ -54,15 +54,24 @@ export async function uploadFile(file: File, extendedTtl = false): Promise<{
   sizeBytes: number;
   expiresAt: string;
 }> {
+  console.log(`[upload] Starting: ${file.name}, size=${file.size}, type="${file.type}"`);
   const formData = new FormData();
   formData.append('file', file);
 
   const ttlParam = extendedTtl ? '?ttlHint=extended' : '';
-  const response = await apiFetch(`/files/upload${ttlParam}`, {
-    method: 'POST',
-    body: formData,
-  });
-  return response.json();
+  try {
+    const response = await apiFetch(`/files/upload${ttlParam}`, {
+      method: 'POST',
+      body: formData,
+    });
+    const result = await response.json();
+    console.log(`[upload] Success: ${file.name} -> fileId=${result.fileId}`);
+    return result;
+  } catch (err) {
+    console.error(`[upload] Failed: ${file.name}`, err);
+    console.error(`[upload] API_BASE=${API_BASE}`);
+    throw err;
+  }
 }
 
 export async function getFileUrl(fileId: string): Promise<string> {
@@ -164,6 +173,27 @@ export async function createAiEdit(
       mode,
       options: options?.editOptions,
     }),
+  });
+}
+
+// Auto enhance
+export async function listEnhanceModels(): Promise<{ models: EnhanceModelDescriptor[] }> {
+  return apiJson('/auto-enhance/models');
+}
+
+export async function runAutoEnhance(
+  fileId: string,
+  modelId: string,
+  options?: { strength?: number; signal?: AbortSignal }
+): Promise<{ jobId: string }> {
+  return apiJson('/auto-enhance/run', {
+    method: 'POST',
+    body: JSON.stringify({
+      fileId,
+      modelId,
+      strength: options?.strength,
+    }),
+    signal: options?.signal,
   });
 }
 

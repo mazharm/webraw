@@ -57,6 +57,12 @@ pub enum AppError {
     #[error("Invalid MIME type: {0}")]
     InvalidMimeType(String),
 
+    #[error("Auto enhance error: {0}")]
+    AutoEnhanceError(String),
+
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -135,6 +141,18 @@ impl AppError {
                 "INVALID_MIME_TYPE",
                 "Invalid MIME Type",
                 format!("MIME type '{}' is not supported", mime),
+            ),
+            AppError::AutoEnhanceError(detail) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTO_ENHANCE_ERROR",
+                "Auto Enhance Error",
+                detail.clone(),
+            ),
+            AppError::ModelNotFound(id) => (
+                StatusCode::NOT_FOUND,
+                "MODEL_NOT_FOUND",
+                "Model Not Found",
+                format!("Enhancement model '{}' not found", id),
             ),
             AppError::Internal(detail) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

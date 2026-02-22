@@ -22,7 +22,8 @@ import { useCallback } from 'react';
 
 export function LibraryView() {
   const assets = useLibraryStore(s => s.assets);
-  const filteredAssets = useLibraryStore(s => s.getFilteredAssets());
+  const getFilteredAssets = useLibraryStore(s => s.getFilteredAssets);
+  const filteredAssets = getFilteredAssets();
   const importProgress = useLibraryStore(s => s.importProgress);
   const filterFlag = useLibraryStore(s => s.filterFlag);
   const filterMinRating = useLibraryStore(s => s.filterMinRating);
@@ -49,11 +50,13 @@ export function LibraryView() {
         alignItems: 'center',
         justifyContent: 'center',
         gap: 16,
-        color: tokens.colorNeutralForeground3,
+        color: tokens.colorNeutralForeground1,
       }}>
-        <ArrowImportRegular style={{ fontSize: 64 }} />
+        <ArrowImportRegular style={{ fontSize: 64, color: tokens.colorBrandForeground1 }} />
         <Text size={500} weight="semibold">No photos imported</Text>
-        <Text size={300}>Click Import in the toolbar to add photos</Text>
+        <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>
+          Click Import in the toolbar to add RAW or JPEG photos
+        </Text>
       </div>
     );
   }

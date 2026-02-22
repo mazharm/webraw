@@ -1,3 +1,4 @@
+pub mod auto_enhance;
 pub mod cache;
 pub mod render;
 pub mod ai_proxy;

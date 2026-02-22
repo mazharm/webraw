@@ -10,9 +10,17 @@ export function usePreviewRenderer(fileId: string | null, editState: EditState |
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const abortRef = useRef<AbortController>();
   const prevUrlRef = useRef<string | null>(null);
+  // Generation counter to handle abort race conditions:
+  // When we abort a previous request, its finally{} block runs setIsLoading(false)
+  // which would cancel the NEW request's setIsLoading(true). The counter lets us
+  // only apply state updates from the most recent request.
+  const generationRef = useRef(0);
 
   const fetchPreview = useCallback(async () => {
     if (!fileId || !editState) return;
+
+    // Bump generation — only the latest generation's results are applied
+    const gen = ++generationRef.current;
 
     // Cancel previous request
     abortRef.current?.abort();
@@ -21,15 +29,27 @@ export function usePreviewRenderer(fileId: string | null, editState: EditState |
     setIsLoading(true);
     setError(null);
 
+    // Strip history/snapshots from the payload — the backend doesn't use them
+    const apiEditState = {
+      schemaVersion: editState.schemaVersion,
+      assetId: editState.assetId,
+      global: editState.global,
+      localAdjustments: editState.localAdjustments,
+      aiLayers: editState.aiLayers,
+      filmSim: editState.filmSim,
+    };
+
     try {
-      const result = await renderPreview(fileId, editState, {
+      const result = await renderPreview(fileId, apiEditState as EditState, {
         maxEdge: 2560,
         colorSpace: 'sRGB',
         qualityHint: 'FAST',
         signal: abortRef.current?.signal,
       });
 
-      // Check if it's a direct result
+      // Stale response — a newer request has been started
+      if (gen !== generationRef.current) return;
+
       if ('imageBase64' in result) {
         const preview = result as PreviewResult;
         const blob = base64ToBlob(preview.imageBase64, preview.mimeType);
@@ -45,11 +65,15 @@ export function usePreviewRenderer(fileId: string | null, editState: EditState |
         setHistogram(preview.histogram ?? null);
       }
     } catch (err: any) {
+      if (gen !== generationRef.current) return; // stale
       if (err.name !== 'AbortError') {
         setError(err.detail ?? err.message ?? 'Preview render failed');
       }
     } finally {
-      setIsLoading(false);
+      // Only clear loading if this is still the active request
+      if (gen === generationRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [fileId, editState]);
 

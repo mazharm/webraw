@@ -48,24 +48,25 @@ pub async fn upload_file(
         let filename = field.file_name().unwrap_or("upload").to_string();
         let content_type = field
             .content_type()
+            .filter(|ct| !ct.is_empty())
             .unwrap_or("application/octet-stream")
             .to_string();
 
-        // Validate MIME type
-        let allowed_types = [
-            "image/jpeg", "image/png", "image/tiff",
-            "image/x-adobe-dng", "image/x-canon-cr2", "image/x-canon-cr3",
-            "image/x-nikon-nef", "image/x-sony-arw", "image/x-fuji-raf",
-            "application/octet-stream", // fallback for RAW files
-        ];
-        if !allowed_types.iter().any(|t| content_type.starts_with(t)) && content_type != "application/octet-stream" {
-            return Err(AppError::InvalidMimeType(content_type));
-        }
-
+        // Read the body first — sending an error before consuming the upload
+        // causes browsers to see a connection reset ("Failed to fetch").
         let data = field
             .bytes()
             .await
             .map_err(|e| AppError::Internal(format!("Failed to read upload: {}", e)))?;
+
+        // Validate MIME type (case-insensitive, accept any image/* since
+        // browsers assign non-standard types to RAW files like "image/CR2")
+        let ct_lower = content_type.to_ascii_lowercase();
+        let allowed = ct_lower.starts_with("image/")
+            || ct_lower == "application/octet-stream";
+        if !allowed {
+            return Err(AppError::InvalidMimeType(content_type));
+        }
 
         let cached = state
             .cache

@@ -1,3 +1,4 @@
+pub mod auto_enhance;
 pub mod files;
 pub mod renders;
 pub mod ai;

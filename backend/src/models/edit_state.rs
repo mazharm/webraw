@@ -49,6 +49,8 @@ pub struct GlobalAdjustments {
     #[serde(default)]
     pub dehaze: f64,
     #[serde(default)]
+    pub hdr: f64,
+    #[serde(default)]
     pub tone_curve: ToneCurve,
     #[serde(default)]
     pub hsl: HashMap<String, HslValues>,
@@ -356,6 +358,7 @@ impl Default for GlobalAdjustments {
             texture: 0.0,
             clarity: 0.0,
             dehaze: 0.0,
+            hdr: 0.0,
             tone_curve: ToneCurve::default(),
             hsl: HashMap::new(),
             grading: None,

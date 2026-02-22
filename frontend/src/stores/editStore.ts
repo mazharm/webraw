@@ -46,6 +46,7 @@ export function defaultGlobal(): GlobalAdjustments {
     texture: 0,
     clarity: 0,
     dehaze: 0,
+    hdr: 0,
     toneCurve: {
       mode: 'POINT',
       points: [{ x: 0, y: 0 }, { x: 1, y: 1 }],

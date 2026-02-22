@@ -99,6 +99,13 @@ export function BasicPanel() {
         onChange={v => updateGlobal('dehaze', v)}
         onChangeCommit={() => commit('Dehaze')}
       />
+      <AdjustmentSlider
+        label="HDR"
+        value={g.hdr}
+        min={0} max={100}
+        onChange={v => updateGlobal('hdr', v)}
+        onChangeCommit={() => commit('HDR')}
+      />
 
       <div style={{ height: 8 }} />
 

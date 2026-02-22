@@ -90,6 +90,7 @@ export interface GlobalAdjustments {
   texture: number;
   clarity: number;
   dehaze: number;
+  hdr: number;
   toneCurve: ToneCurve;
   hsl: Record<HslChannel, HslValues>;
   grading?: ColorGrading;
@@ -251,7 +252,7 @@ export interface HistogramData {
 }
 
 export type JobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETE' | 'FAILED';
-export type JobKind = 'PREVIEW' | 'EXPORT' | 'AI_EDIT';
+export type JobKind = 'PREVIEW' | 'EXPORT' | 'AI_EDIT' | 'AUTO_ENHANCE';
 
 export interface JobInfo {
   jobId: string;
@@ -272,6 +273,30 @@ export interface ProblemDetail {
   requestId: string;
   retryAfter?: number;
 }
+
+export type EnhanceModelKind = 'PARAMETER_PREDICTOR' | 'IMAGE_TO_IMAGE';
+
+export interface EnhanceModelDescriptor {
+  id: string;
+  name: string;
+  description: string;
+  kind: EnhanceModelKind;
+  version: string;
+  builtin: boolean;
+}
+
+export interface EnhanceResultParameters {
+  type: 'Parameters';
+  values: Record<string, number>;
+}
+
+export interface EnhanceResultImage {
+  type: 'Image';
+  resultFileId: string;
+  mimeType: string;
+}
+
+export type EnhanceResult = EnhanceResultParameters | EnhanceResultImage;
 
 export type ViewMode = 'library' | 'develop';
 

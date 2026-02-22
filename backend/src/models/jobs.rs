@@ -17,6 +17,7 @@ pub enum JobKind {
     Preview,
     Export,
     AiEdit,
+    AutoEnhance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

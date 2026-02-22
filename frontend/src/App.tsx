@@ -34,7 +34,7 @@ function App() {
   }, [setBackendHealthy]);
 
   return (
-    <FluentProvider theme={darkMode ? webDarkTheme : webLightTheme}>
+    <FluentProvider theme={darkMode ? webDarkTheme : webLightTheme} style={{ height: '100%' }}>
       <QueryClientProvider client={queryClient}>
         <AppShell />
       </QueryClientProvider>

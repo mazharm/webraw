@@ -21,6 +21,7 @@ use services::cache::FileCache;
 use services::render::RenderService;
 use services::ai_proxy::AiProxyService;
 use services::job_manager::JobManager;
+use services::auto_enhance::AutoEnhanceService;
 use services::rate_limiter::RateLimiter;
 
 pub struct AppState {
@@ -29,6 +30,7 @@ pub struct AppState {
     pub render: RenderService,
     pub ai_proxy: AiProxyService,
     pub jobs: JobManager,
+    pub auto_enhance: AutoEnhanceService,
     pub render_limiter: RateLimiter,
     pub ai_limiter: RateLimiter,
     pub upload_limiter: RateLimiter,
@@ -91,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let render = RenderService::new(config.clone());
     let ai_proxy = AiProxyService::new(config.clone());
     let jobs = JobManager::new(config.idempotency_ttl_secs);
+    let auto_enhance = AutoEnhanceService::new(&config.models_dir);
     let render_limiter = RateLimiter::new(config.rate_limit_render);
     let ai_limiter = RateLimiter::new(config.rate_limit_ai);
     let upload_limiter = RateLimiter::new(config.rate_limit_upload);
@@ -101,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         render,
         ai_proxy,
         jobs,
+        auto_enhance,
         render_limiter,
         ai_limiter,
         upload_limiter,
@@ -127,19 +131,22 @@ async fn main() -> anyhow::Result<()> {
 
     let api_v1 = Router::new()
         .route("/files/upload", axum::routing::post(handlers::files::upload_file))
-        .route("/files/{file_id}", axum::routing::get(handlers::files::get_file))
-        .route("/files/{file_id}", axum::routing::delete(handlers::files::delete_file))
+        .route("/files/:file_id", axum::routing::get(handlers::files::get_file))
+        .route("/files/:file_id", axum::routing::delete(handlers::files::delete_file))
         .route("/renders/thumbnail", axum::routing::post(handlers::renders::create_thumbnail))
         .route("/renders/preview", axum::routing::post(handlers::renders::create_preview))
         .route("/renders/export", axum::routing::post(handlers::renders::create_export))
         .route("/renders/base-render/stream", axum::routing::get(handlers::renders::base_render_stream))
         .route("/ai/edit", axum::routing::post(handlers::ai::create_ai_edit))
-        .route("/jobs/{job_id}", axum::routing::get(handlers::jobs::get_job));
+        .route("/auto-enhance/models", axum::routing::get(handlers::auto_enhance::list_models))
+        .route("/auto-enhance/run", axum::routing::post(handlers::auto_enhance::run_auto_enhance))
+        .route("/jobs/:job_id", axum::routing::get(handlers::jobs::get_job));
 
     let app = Router::new()
         .nest("/api/v1", api_v1)
         .route("/api/health", axum::routing::get(handlers::health::health_check))
         .route("/api/version", axum::routing::get(handlers::health::version))
+        .layer(axum::extract::DefaultBodyLimit::max(config.max_upload_bytes as usize))
         .layer(middleware::from_fn(request_id_middleware))
         .layer(middleware::from_fn(session_token_middleware))
         .layer(TraceLayer::new_for_http())

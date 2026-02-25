@@ -24,10 +24,24 @@ import { useCallback, useRef, useState } from 'react';
 import { uploadFile, generateThumbnail } from '../../api/client';
 import type { Asset } from '../../types';
 
+/** Generate a thumbnail in the background, updating the asset when done */
+function backgroundThumbnail(
+  fileId: string,
+  assetId: string,
+  updateAsset: (id: string, updates: Partial<Asset>) => void,
+) {
+  generateThumbnail(fileId, 300)
+    .then(blob => {
+      updateAsset(assetId, { thumbnailUrl: URL.createObjectURL(blob) });
+    })
+    .catch(() => {/* non-critical — grid will show filename fallback */});
+}
+
 export function AppShell() {
   const viewMode = useLibraryStore(s => s.viewMode);
   const setViewMode = useLibraryStore(s => s.setViewMode);
   const addAssets = useLibraryStore(s => s.addAssets);
+  const updateAsset = useLibraryStore(s => s.updateAsset);
   const setImportProgress = useLibraryStore(s => s.setImportProgress);
   const backendHealthy = useSettingsStore(s => s.backendHealthy);
   const { undo, redo, canUndo, canRedo } = useEditStore();
@@ -55,17 +69,11 @@ export function AppShell() {
     const importOne = async (file: File) => {
       try {
         const result = await uploadFile(file);
-        let thumbnailUrl: string | undefined;
-        try {
-          const thumbBlob = await generateThumbnail(result.fileId, 300);
-          thumbnailUrl = URL.createObjectURL(thumbBlob);
-        } catch {
-          // thumbnail generation failed, continue without
-        }
 
         const isRaw = /\.(dng|cr2|cr3|nef|arw|raf)$/i.test(file.name);
+        const assetId = crypto.randomUUID();
         const asset: Asset = {
-          id: crypto.randomUUID(),
+          id: assetId,
           filename: file.name,
           mime: file.type || 'application/octet-stream',
           sourceType: isRaw ? 'RAW' : 'RASTER',
@@ -73,9 +81,11 @@ export function AppShell() {
           createdAt: new Date().toISOString(),
           exif: result.exif ?? undefined,
           fileId: result.fileId,
-          thumbnailUrl,
         };
+        // Add asset to library immediately — thumbnail fills in later
         addAssets([asset]);
+        // Fire-and-forget thumbnail generation
+        backgroundThumbnail(result.fileId, assetId, updateAsset);
       } catch (err: unknown) {
         const detail = err && typeof err === 'object' && 'detail' in err
           ? (err as { detail: string }).detail

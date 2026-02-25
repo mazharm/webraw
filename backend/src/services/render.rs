@@ -427,7 +427,9 @@ fn resize_image(img: &DynamicImage, max_edge: u32) -> DynamicImage {
     let scale = max_edge as f64 / w.max(h) as f64;
     let nw = (w as f64 * scale) as u32;
     let nh = (h as f64 * scale) as u32;
-    img.resize_exact(nw, nh, FilterType::Lanczos3)
+    // Use fast bilinear for small targets (thumbnails); Lanczos3 for larger previews
+    let filter = if max_edge <= 600 { FilterType::Triangle } else { FilterType::Lanczos3 };
+    img.resize_exact(nw, nh, filter)
 }
 
 /// Buffer-level operations that can be inserted between pipeline phases.

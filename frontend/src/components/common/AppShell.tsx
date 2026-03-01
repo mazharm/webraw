@@ -113,7 +113,7 @@ export function AppShell() {
     }
     setImportProgress(null);
     e.target.value = '';
-  }, [addAssets, setImportProgress]);
+  }, [addAssets, setImportProgress, updateAsset]);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: tokens.colorNeutralBackground1 }}>

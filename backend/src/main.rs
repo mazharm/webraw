@@ -57,7 +57,7 @@ async fn session_token_middleware(
             .get("X-Session-Token")
             .and_then(|v| v.to_str().ok());
 
-        if token.is_none() || token.unwrap().is_empty() {
+        if token.map_or(true, |t| t.is_empty()) {
             return Err(AppError::MissingSessionToken);
         }
     }

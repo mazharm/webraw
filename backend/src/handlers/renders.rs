@@ -122,7 +122,13 @@ pub async fn create_preview(
                 &state_clone.cache, &file_id, &edit_state, max_edge, &cs, "BEST",
             ).await {
                 Ok(result) => {
-                    job.set_complete(serde_json::to_value(result).unwrap());
+                    match serde_json::to_value(result) {
+                        Ok(val) => job.set_complete(val),
+                        Err(e) => job.set_failed(
+                            AppError::Internal(format!("Serialization error: {}", e))
+                                .to_problem_detail(&jid),
+                        ),
+                    }
                 }
                 Err(e) => {
                     let pd = e.to_problem_detail(&jid);
@@ -139,7 +145,9 @@ pub async fn create_preview(
         &state.cache, &req.file_id, &req.edit_state, max_edge, color_space, quality_hint,
     ).await?;
 
-    Ok(Json(serde_json::to_value(result).unwrap()))
+    let value = serde_json::to_value(result)
+        .map_err(|e| AppError::Internal(format!("Serialization error: {}", e)))?;
+    Ok(Json(value))
 }
 
 pub async fn create_export(
@@ -163,7 +171,13 @@ pub async fn create_export(
             &state_clone.cache, &file_id, &edit_state, &format, bit_depth, quality, &color_space,
         ).await {
             Ok(result) => {
-                job.set_complete(serde_json::to_value(result).unwrap());
+                match serde_json::to_value(result) {
+                    Ok(val) => job.set_complete(val),
+                    Err(e) => job.set_failed(
+                        AppError::Internal(format!("Serialization error: {}", e))
+                            .to_problem_detail(&jid),
+                    ),
+                }
             }
             Err(e) => {
                 let pd = e.to_problem_detail(&jid);

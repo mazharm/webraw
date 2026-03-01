@@ -68,7 +68,7 @@ function ThumbnailCard({
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') onDoubleClick();
-    if (e.key >= '1' && e.key <= '5') onRate(parseInt(e.key));
+    if (e.key >= '1' && e.key <= '5') onRate(parseInt(e.key, 10));
     if (e.key === 'p') onFlag('pick');
     if (e.key === 'x') onFlag('reject');
     if (e.key === 'u') onFlag(null);

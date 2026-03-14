@@ -11,14 +11,13 @@ import {
   ProgressBar,
   Text,
   Slider,
-  Switch,
   MessageBar,
   MessageBarBody,
 } from '@fluentui/react-components';
 import { useEditStore } from '../../stores/editStore';
 import { useLibraryStore } from '../../stores/libraryStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { renderExport, pollJob, getFileUrl } from '../../api/client';
+import { renderExport } from '../../api/client';
 import { useState, useCallback } from 'react';
 
 interface Props {
@@ -34,41 +33,36 @@ export function ExportDialog({ onDismiss }: Props) {
   const [quality, setQuality] = useState(95);
   const [bitDepth, setBitDepth] = useState<8 | 16>(8);
   const [exporting, setExporting] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [exportDone, setExportDone] = useState(false);
 
   const handleExport = useCallback(async () => {
     if (!editState || !activeAsset?.fileId) return;
 
     setExporting(true);
     setError(null);
-    setProgress(0);
+    setExportDone(false);
 
     try {
-      const { jobId } = await renderExport(
+      const blob = await renderExport(
         activeAsset.fileId,
         editState,
         format,
         { bitDepth, quality, colorSpace },
       );
 
-      const result = await pollJob(jobId, setProgress);
+      // Trigger browser download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = activeAsset.filename.replace(/\.[^.]+$/, '');
+      a.download = `${baseName}.${format.toLowerCase() === 'jpg' ? 'jpg' : format.toLowerCase()}`;
+      a.click();
+      URL.revokeObjectURL(url);
 
-      if (result.status === 'FAILED') {
-        setError(result.error?.detail ?? 'Export failed');
-        return;
-      }
-
-      const resultData = result.result as any;
-      if (resultData?.resultFileId) {
-        const url = await getFileUrl(resultData.resultFileId);
-        setDownloadUrl(url);
-      } else if (resultData?.downloadUrl) {
-        setDownloadUrl(resultData.downloadUrl);
-      }
+      setExportDone(true);
     } catch (err: any) {
-      setError(err.detail ?? err.message ?? 'Export failed');
+      setError(err.message ?? 'Export failed');
     } finally {
       setExporting(false);
     }
@@ -112,7 +106,7 @@ export function ExportDialog({ onDismiss }: Props) {
                 <Field label="Bit Depth">
                   <Select
                     value={bitDepth.toString()}
-                    onChange={(_, data) => setBitDepth(parseInt(data.value) as 8 | 16)}
+                    onChange={(_, data) => setBitDepth(parseInt(data.value, 10) as 8 | 16)}
                   >
                     <option value="8">8-bit</option>
                     <option value="16">16-bit</option>
@@ -129,7 +123,7 @@ export function ExportDialog({ onDismiss }: Props) {
 
               {exporting && (
                 <div>
-                  <ProgressBar value={progress} max={1} />
+                  <ProgressBar />
                   <Text size={200}>Exporting...</Text>
                 </div>
               )}
@@ -140,14 +134,9 @@ export function ExportDialog({ onDismiss }: Props) {
                 </MessageBar>
               )}
 
-              {downloadUrl && (
+              {exportDone && (
                 <MessageBar intent="success">
-                  <MessageBarBody>
-                    Export complete!{' '}
-                    <a href={downloadUrl} download style={{ color: 'inherit' }}>
-                      Download file
-                    </a>
-                  </MessageBarBody>
+                  <MessageBarBody>Export complete! File downloaded.</MessageBarBody>
                 </MessageBar>
               )}
             </div>

@@ -1,5 +1,5 @@
 import { Slider, Label, Input, tokens } from '@fluentui/react-components';
-import { useCallback, useState, useRef } from 'react';
+import { useCallback, useState } from 'react';
 
 interface Props {
   label: string;

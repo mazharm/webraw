@@ -1,6 +1,6 @@
 import { PanelSection } from '../common/PanelSection';
 import { AdjustmentSlider } from '../common/AdjustmentSlider';
-import { tokens, Button, Text, Select } from '@fluentui/react-components';
+import { tokens, Button, Text } from '@fluentui/react-components';
 import { useEditStore } from '../../stores/editStore';
 import type { FilmSimLook } from '../../types';
 

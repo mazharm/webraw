@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { Asset, ViewMode } from '../types';
 
 type SortBy = 'name' | 'date' | 'rating';
@@ -32,84 +33,99 @@ interface LibraryStore {
   getFilteredAssets: () => Asset[];
 }
 
-export const useLibraryStore = create<LibraryStore>((set, get) => ({
-  assets: [],
-  selectedAssetIds: new Set(),
-  activeAssetId: null,
-  viewMode: 'library',
-  sortBy: 'date',
-  filterFlag: 'all',
-  filterMinRating: 0,
-  importProgress: null,
+export const useLibraryStore = create<LibraryStore>()(
+  persist(
+    (set, get) => ({
+      assets: [],
+      selectedAssetIds: new Set(),
+      activeAssetId: null,
+      viewMode: 'library',
+      sortBy: 'date',
+      filterFlag: 'all',
+      filterMinRating: 0,
+      importProgress: null,
 
-  addAssets: (assets) => set(state => ({
-    assets: [...state.assets, ...assets],
-  })),
+      addAssets: (assets) => set(state => ({
+        assets: [...state.assets, ...assets],
+      })),
 
-  removeAsset: (id) => set(state => ({
-    assets: state.assets.filter(a => a.id !== id),
-    selectedAssetIds: new Set([...state.selectedAssetIds].filter(sid => sid !== id)),
-    activeAssetId: state.activeAssetId === id ? null : state.activeAssetId,
-  })),
+      removeAsset: (id) => set(state => ({
+        assets: state.assets.filter(a => a.id !== id),
+        selectedAssetIds: new Set([...state.selectedAssetIds].filter(sid => sid !== id)),
+        activeAssetId: state.activeAssetId === id ? null : state.activeAssetId,
+      })),
 
-  selectAsset: (id, multi = false) => set(state => {
-    if (multi) {
-      const newSet = new Set(state.selectedAssetIds);
-      if (newSet.has(id)) newSet.delete(id);
-      else newSet.add(id);
-      return { selectedAssetIds: newSet };
-    }
-    return { selectedAssetIds: new Set([id]), activeAssetId: id };
-  }),
+      selectAsset: (id, multi = false) => set(state => {
+        if (multi) {
+          const newSet = new Set(state.selectedAssetIds);
+          if (newSet.has(id)) newSet.delete(id);
+          else newSet.add(id);
+          return { selectedAssetIds: newSet };
+        }
+        return { selectedAssetIds: new Set([id]), activeAssetId: id };
+      }),
 
-  setActiveAsset: (id) => set({ activeAssetId: id }),
-  setViewMode: (mode) => set({ viewMode: mode }),
-  setSortBy: (sort) => set({ sortBy: sort }),
-  setFilterFlag: (flag) => set({ filterFlag: flag }),
-  setFilterMinRating: (rating) => set({ filterMinRating: rating }),
-  setImportProgress: (progress) => set({ importProgress: progress }),
+      setActiveAsset: (id) => set({ activeAssetId: id }),
+      setViewMode: (mode) => set({ viewMode: mode }),
+      setSortBy: (sort) => set({ sortBy: sort }),
+      setFilterFlag: (flag) => set({ filterFlag: flag }),
+      setFilterMinRating: (rating) => set({ filterMinRating: rating }),
+      setImportProgress: (progress) => set({ importProgress: progress }),
 
-  updateAsset: (id, updates) => set(state => ({
-    assets: state.assets.map(a => a.id === id ? { ...a, ...updates } : a),
-  })),
+      updateAsset: (id, updates) => set(state => ({
+        assets: state.assets.map(a => a.id === id ? { ...a, ...updates } : a),
+      })),
 
-  setFlag: (id, flag) => set(state => ({
-    assets: state.assets.map(a => a.id === id ? { ...a, flag } : a),
-  })),
+      setFlag: (id, flag) => set(state => ({
+        assets: state.assets.map(a => a.id === id ? { ...a, flag } : a),
+      })),
 
-  setRating: (id, rating) => set(state => ({
-    assets: state.assets.map(a => a.id === id ? { ...a, rating } : a),
-  })),
+      setRating: (id, rating) => set(state => ({
+        assets: state.assets.map(a => a.id === id ? { ...a, rating } : a),
+      })),
 
-  setColorLabel: (id, label) => set(state => ({
-    assets: state.assets.map(a => a.id === id ? { ...a, colorLabel: label } : a),
-  })),
+      setColorLabel: (id, label) => set(state => ({
+        assets: state.assets.map(a => a.id === id ? { ...a, colorLabel: label } : a),
+      })),
 
-  getFilteredAssets: () => {
-    const { assets, filterFlag, filterMinRating, sortBy } = get();
-    let filtered = assets;
+      getFilteredAssets: () => {
+        const { assets, filterFlag, filterMinRating, sortBy } = get();
+        let filtered = assets;
 
-    if (filterFlag !== 'all') {
-      if (filterFlag === 'unflagged') {
-        filtered = filtered.filter(a => !a.flag);
-      } else {
-        filtered = filtered.filter(a => a.flag === filterFlag);
-      }
-    }
+        if (filterFlag !== 'all') {
+          if (filterFlag === 'unflagged') {
+            filtered = filtered.filter(a => !a.flag);
+          } else {
+            filtered = filtered.filter(a => a.flag === filterFlag);
+          }
+        }
 
-    if (filterMinRating > 0) {
-      filtered = filtered.filter(a => (a.rating ?? 0) >= filterMinRating);
-    }
+        if (filterMinRating > 0) {
+          filtered = filtered.filter(a => (a.rating ?? 0) >= filterMinRating);
+        }
 
-    filtered = [...filtered].sort((a, b) => {
-      switch (sortBy) {
-        case 'name': return a.filename.localeCompare(b.filename);
-        case 'rating': return (b.rating ?? 0) - (a.rating ?? 0);
-        case 'date':
-        default: return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      }
-    });
+        filtered = [...filtered].sort((a, b) => {
+          switch (sortBy) {
+            case 'name': return a.filename.localeCompare(b.filename);
+            case 'rating': return (b.rating ?? 0) - (a.rating ?? 0);
+            case 'date':
+            default: return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          }
+        });
 
-    return filtered;
-  },
-}));
+        return filtered;
+      },
+    }),
+    {
+      name: 'webraw-library',
+      partialize: (state) => ({
+        assets: state.assets.map(a => ({
+          ...a,
+          // Exclude blob URLs — invalid after refresh; thumbnails regenerate from IndexedDB
+          thumbnailUrl: undefined,
+        })),
+        activeAssetId: state.activeAssetId,
+      }),
+    },
+  ),
+);

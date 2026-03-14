@@ -1,98 +1,76 @@
-import type { EditState, JobInfo, ProblemDetail, HistogramData, EnhanceModelDescriptor, OptimizeModelStatus } from '../types';
+import init, {
+  load_image_meta,
+  generate_thumbnail as wasm_generate_thumbnail,
+  render_preview as wasm_render_preview,
+  render_export as wasm_render_export,
+} from '../wasm-pkg/webraw_wasm';
+import { get, set, del } from 'idb-keyval';
+import type { EditState, HistogramData } from '../types';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api/v1';
+let wasmReady = false;
 
-let sessionToken: string | null = null;
-
-function getSessionToken(): string {
-  if (!sessionToken) {
-    const arr = new Uint8Array(16);
-    crypto.getRandomValues(arr);
-    sessionToken = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+export async function initEngine(): Promise<void> {
+  if (!wasmReady) {
+    await init();
+    wasmReady = true;
   }
-  return sessionToken;
 }
 
-async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(options.headers);
-  headers.set('X-Session-Token', getSessionToken());
+// ─── File Storage (IndexedDB) ───
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-    signal: options.signal,
-  });
-
-  if (!response.ok) {
-    const error: ProblemDetail = await response.json().catch(() => ({
-      type: 'unknown',
-      title: 'Request Failed',
-      status: response.status,
-      detail: response.statusText,
-      code: 'UNKNOWN',
-      requestId: 'unknown',
-    }));
-    throw error;
-  }
-
-  return response;
-}
-
-async function apiJson<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers);
-  if (options.body && typeof options.body === 'string') {
-    headers.set('Content-Type', 'application/json');
-  }
-  const response = await apiFetch(path, { ...options, headers });
-  return response.json();
-}
-
-// File endpoints
-export async function uploadFile(file: File, extendedTtl = false): Promise<{
+export async function uploadFile(file: File): Promise<{
   fileId: string;
   exif: Record<string, unknown> | null;
   sizeBytes: number;
-  expiresAt: string;
 }> {
-  console.log(`[upload] Starting: ${file.name}, size=${file.size}, type="${file.type}"`);
-  const formData = new FormData();
-  formData.append('file', file);
+  await initEngine();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const fileId = crypto.randomUUID();
 
-  const ttlParam = extendedTtl ? '?ttlHint=extended' : '';
-  try {
-    const response = await apiFetch(`/files/upload${ttlParam}`, {
-      method: 'POST',
-      body: formData,
-    });
-    const result = await response.json();
-    console.log(`[upload] Success: ${file.name} -> fileId=${result.fileId}`);
-    return result;
-  } catch (err) {
-    console.error(`[upload] Failed: ${file.name}`, err);
-    console.error(`[upload] API_BASE=${API_BASE}`);
-    throw err;
-  }
-}
+  const metaJson = load_image_meta(bytes, file.name);
+  const meta = JSON.parse(metaJson);
 
-export async function getFileUrl(fileId: string): Promise<string> {
-  return `${API_BASE}/files/${fileId}`;
+  await set(`file:${fileId}`, bytes);
+  await set(`meta:${fileId}`, {
+    filename: file.name,
+    size: file.size,
+    hash: meta.hash,
+    exif: meta.exif,
+  });
+
+  return {
+    fileId,
+    exif: meta.exif ?? null,
+    sizeBytes: file.size,
+  };
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
-  await apiFetch(`/files/${fileId}`, { method: 'DELETE' });
+  await del(`file:${fileId}`);
+  await del(`meta:${fileId}`);
+  await del(`thumb:${fileId}`);
 }
 
-// Thumbnail
-export async function generateThumbnail(fileId: string, maxEdge = 300): Promise<Blob> {
-  const response = await apiFetch('/renders/thumbnail', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileId, maxEdge }),
-  });
-  return response.blob();
+// ─── Thumbnail ───
+
+export async function generateThumbnail(
+  fileId: string,
+  maxEdge = 300
+): Promise<Blob> {
+  await initEngine();
+  const bytes = await get(`file:${fileId}`) as Uint8Array;
+  if (!bytes) throw new Error(`File ${fileId} not found in storage`);
+
+  const meta = await get(`meta:${fileId}`) as { filename: string };
+  const jpegBytes = wasm_generate_thumbnail(bytes, meta.filename, maxEdge);
+  const blob = new Blob([new Uint8Array(jpegBytes)], { type: 'image/jpeg' });
+
+  await set(`thumb:${fileId}`, jpegBytes);
+  return blob;
 }
 
-// Preview
+// ─── Preview ───
+
 export interface PreviewResult {
   imageBase64: string;
   mimeType: string;
@@ -106,207 +84,225 @@ export interface PreviewResult {
 export async function renderPreview(
   fileId: string,
   editState: EditState,
-  options: { maxEdge?: number; colorSpace?: string; qualityHint?: string; signal?: AbortSignal } = {}
-): Promise<PreviewResult | { jobId: string }> {
-  return apiJson('/renders/preview', {
-    method: 'POST',
-    body: JSON.stringify({
-      fileId,
-      editState,
-      maxEdge: options.maxEdge ?? 2560,
-      colorSpace: options.colorSpace ?? 'sRGB',
-      qualityHint: options.qualityHint ?? 'FAST',
-    }),
-    signal: options.signal,
+  options: { maxEdge?: number; signal?: AbortSignal } = {}
+): Promise<PreviewResult> {
+  await initEngine();
+  const bytes = await get(`file:${fileId}`) as Uint8Array;
+  if (!bytes) throw new Error(`File ${fileId} not found in storage`);
+
+  const meta = await get(`meta:${fileId}`) as { filename: string };
+  const editJson = JSON.stringify({
+    schemaVersion: editState.schemaVersion,
+    assetId: editState.assetId,
+    global: editState.global,
+    localAdjustments: editState.localAdjustments,
+    aiLayers: editState.aiLayers,
+    filmSim: editState.filmSim,
   });
+
+  const resultJson = wasm_render_preview(
+    bytes,
+    meta.filename,
+    editJson,
+    options.maxEdge ?? 2560
+  );
+  return JSON.parse(resultJson);
 }
 
-// Export
+// ─── Export ───
+
 export async function renderExport(
   fileId: string,
   editState: EditState,
   format: 'JPG' | 'PNG' | 'TIFF',
   options: { bitDepth?: number; quality?: number; colorSpace?: string } = {}
-): Promise<{ jobId: string }> {
-  return apiJson('/renders/export', {
-    method: 'POST',
-    body: JSON.stringify({
-      fileId,
-      editState,
-      format,
-      bitDepth: options.bitDepth ?? 8,
-      quality: options.quality ?? 95,
-      colorSpace: options.colorSpace ?? 'sRGB',
-    }),
+): Promise<Blob> {
+  await initEngine();
+  const bytes = await get(`file:${fileId}`) as Uint8Array;
+  if (!bytes) throw new Error(`File ${fileId} not found in storage`);
+
+  const meta = await get(`meta:${fileId}`) as { filename: string };
+  const editJson = JSON.stringify({
+    schemaVersion: editState.schemaVersion,
+    assetId: editState.assetId,
+    global: editState.global,
+    localAdjustments: editState.localAdjustments,
+    aiLayers: editState.aiLayers,
+    filmSim: editState.filmSim,
   });
+
+  const exportBytes = wasm_render_export(
+    bytes,
+    meta.filename,
+    editJson,
+    format,
+    options.quality ?? 95,
+    options.bitDepth ?? 8,
+    options.colorSpace ?? 'sRGB',
+  );
+
+  const mimeMap: Record<string, string> = { JPG: 'image/jpeg', PNG: 'image/png', TIFF: 'image/tiff' };
+  return new Blob([new Uint8Array(exportBytes)], { type: mimeMap[format] });
 }
 
-// AI edit
+// ─── AI Editing (direct browser→API) ───
+
 export async function createAiEdit(
-  fileId: string,
-  editState: EditState,
+  imageBase64: string,
   prompt: string,
   mode: string,
   apiKey: string,
   options?: {
     negativePrompt?: string;
-    idempotencyKey?: string;
-    editOptions?: Record<string, unknown>;
     provider?: 'gemini' | 'openai' | 'google-imagen';
   }
-): Promise<{ jobId: string }> {
+): Promise<{ imageData: Uint8Array; mimeType: string; model: string }> {
   const provider = options?.provider ?? 'gemini';
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+
+  const modePrompts: Record<string, string> = {
+    edit: `Edit this image: ${prompt}`,
+    remove: `Remove the following from this image: ${prompt}`,
+    replace_bg: `Replace the background of this image with: ${prompt}`,
+    relight: `Relight this image: ${prompt}`,
+    expand: `Expand this image outward: ${prompt}`,
   };
+  const systemPrompt = modePrompts[mode] ?? prompt;
 
-  // Route API key header based on provider
-  if (provider === 'openai') {
-    headers['X-OpenAI-Key'] = apiKey;
-  } else {
-    headers['X-Gemini-Key'] = apiKey;
+  if (provider === 'gemini') {
+    return callGemini(imageBase64, systemPrompt, apiKey);
+  } else if (provider === 'openai') {
+    return callOpenAI(imageBase64, systemPrompt, apiKey);
+  } else if (provider === 'google-imagen') {
+    return callImagen(imageBase64, systemPrompt, apiKey);
   }
+  throw new Error(`Unsupported provider: ${provider}`);
+}
 
-  if (options?.idempotencyKey) {
-    headers['Idempotency-Key'] = options.idempotencyKey;
-  }
+async function callGemini(
+  imageBase64: string,
+  prompt: string,
+  apiKey: string
+): Promise<{ imageData: Uint8Array; mimeType: string; model: string }> {
+  const model = 'gemini-2.5-pro';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  return apiJson('/ai/edit', {
+  const response = await fetch(url, {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
-      fileId,
-      editState,
-      prompt,
-      negativePrompt: options?.negativePrompt,
-      mode,
-      provider,
-      options: options?.editOptions,
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+        ],
+      }],
+      generationConfig: {
+        responseModalities: ['IMAGE', 'TEXT'],
+        responseMimeType: 'image/png',
+      },
     }),
   });
+
+  if (!response.ok) {
+    const status = response.status;
+    if (status === 429) throw new Error('AI_QUOTA_EXCEEDED');
+    if (status === 401 || status === 403) throw new Error('AI_INVALID_KEY');
+    throw new Error(`Gemini API error: ${status}`);
+  }
+
+  const data = await response.json();
+  const part = data.candidates?.[0]?.content?.parts?.find(
+    (p: any) => p.inlineData
+  );
+  if (!part) throw new Error('No image in Gemini response');
+
+  const binary = atob(part.inlineData.data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  return { imageData: bytes, mimeType: part.inlineData.mimeType, model };
 }
 
-// Auto enhance
-export async function listEnhanceModels(): Promise<{ models: EnhanceModelDescriptor[] }> {
-  return apiJson('/auto-enhance/models');
-}
+async function callOpenAI(
+  imageBase64: string,
+  prompt: string,
+  apiKey: string
+): Promise<{ imageData: Uint8Array; mimeType: string; model: string }> {
+  const model = 'gpt-image-1';
+  const binary = atob(imageBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const imageBlob = new Blob([bytes], { type: 'image/png' });
 
-export async function runAutoEnhance(
-  fileId: string,
-  modelId: string,
-  options?: { strength?: number; signal?: AbortSignal; apiKey?: string; anthropicApiKey?: string; openaiApiKey?: string }
-): Promise<{ jobId: string }> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (options?.apiKey) {
-    headers['X-Gemini-Key'] = options.apiKey;
-  }
-  if (options?.anthropicApiKey) {
-    headers['X-Anthropic-Key'] = options.anthropicApiKey;
-  }
-  if (options?.openaiApiKey) {
-    headers['X-OpenAI-Key'] = options.openaiApiKey;
-  }
-  return apiJson('/auto-enhance/run', {
+  const form = new FormData();
+  form.append('image', imageBlob, 'image.png');
+  form.append('prompt', prompt);
+  form.append('model', model);
+
+  const response = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
-    headers,
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const status = response.status;
+    if (status === 429) throw new Error('AI_QUOTA_EXCEEDED');
+    if (status === 401 || status === 403) throw new Error('AI_INVALID_KEY');
+    throw new Error(`OpenAI API error: ${status}`);
+  }
+
+  const data = await response.json();
+  const b64 = data.data?.[0]?.b64_json;
+  if (!b64) throw new Error('No image in OpenAI response');
+
+  const resultBin = atob(b64);
+  const resultBytes = new Uint8Array(resultBin.length);
+  for (let i = 0; i < resultBin.length; i++) resultBytes[i] = resultBin.charCodeAt(i);
+
+  return { imageData: resultBytes, mimeType: 'image/png', model };
+}
+
+async function callImagen(
+  imageBase64: string,
+  prompt: string,
+  apiKey: string
+): Promise<{ imageData: Uint8Array; mimeType: string; model: string }> {
+  const model = 'imagen-3.0-edit-001';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
-      fileId,
-      modelId,
-      strength: options?.strength,
+      instances: [{
+        prompt,
+        image: { bytesBase64Encoded: imageBase64 },
+      }],
+      parameters: { sampleCount: 1 },
     }),
-    signal: options?.signal,
   });
-}
 
-// Optimize
-export async function listOptimizeModels(): Promise<{ models: OptimizeModelStatus[] }> {
-  return apiJson('/optimize/models');
-}
-
-export async function runOptimize(
-  fileId: string,
-  options?: {
-    strength?: number;
-    denoise?: boolean;
-    enhance?: boolean;
-    masks?: boolean;
-    signal?: AbortSignal;
-  }
-): Promise<{ jobId: string }> {
-  return apiJson('/optimize/run', {
-    method: 'POST',
-    body: JSON.stringify({
-      fileId,
-      strength: options?.strength,
-      denoise: options?.denoise,
-      enhance: options?.enhance,
-      masks: options?.masks,
-    }),
-    signal: options?.signal,
-  });
-}
-
-export async function computeOptimizeMasks(
-  fileId: string,
-): Promise<{ jobId: string }> {
-  return apiJson('/optimize/masks', {
-    method: 'POST',
-    body: JSON.stringify({ fileId }),
-  });
-}
-
-// Job polling
-export async function getJob(jobId: string): Promise<JobInfo> {
-  return apiJson(`/jobs/${jobId}`);
-}
-
-export async function pollJob(
-  jobId: string,
-  onProgress?: (progress: number) => void,
-  signal?: AbortSignal,
-  maxAttempts = 120,
-): Promise<JobInfo> {
-  let delay = 500;
-  const maxDelay = 5000;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (signal?.aborted) throw new Error('Aborted');
-
-    const job = await getJob(jobId);
-
-    if (job.progress && onProgress) {
-      onProgress(job.progress);
-    }
-
-    if (job.status === 'COMPLETE' || job.status === 'FAILED') {
-      return job;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, delay));
-    delay = Math.min(delay * 1.5, maxDelay);
+  if (!response.ok) {
+    const status = response.status;
+    if (status === 429) throw new Error('AI_QUOTA_EXCEEDED');
+    if (status === 401 || status === 403) throw new Error('AI_INVALID_KEY');
+    throw new Error(`Imagen API error: ${status}`);
   }
 
-  throw new Error(`Job ${jobId} did not complete after ${maxAttempts} polling attempts`);
-}
+  const data = await response.json();
+  const b64 = data.predictions?.[0]?.bytesBase64Encoded;
+  if (!b64) throw new Error('No image in Imagen response');
 
-// Health check
-export async function healthCheck(): Promise<{ status: string; uptime: number }> {
-  const response = await fetch(`${API_BASE.replace('/v1', '')}/health`);
-  return response.json();
-}
+  const imgBinary = atob(b64);
+  const imgBytes = new Uint8Array(imgBinary.length);
+  for (let i = 0; i < imgBinary.length; i++) imgBytes[i] = imgBinary.charCodeAt(i);
 
-// SSE Base render stream
-export function baseRenderStream(
-  fileId: string,
-  baseRenderHash: string,
-  maxEdge = 2560
-): EventSource {
-  const params = new URLSearchParams({
-    fileId,
-    baseRenderHash,
-    maxEdge: maxEdge.toString(),
-  });
-  return new EventSource(`${API_BASE}/renders/base-render/stream?${params}`);
+  return { imageData: imgBytes, mimeType: 'image/png', model };
 }

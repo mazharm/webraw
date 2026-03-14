@@ -1,0 +1,23 @@
+[package]
+name = "webraw-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rawloader = { version = "0.37", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+[profile.release]
+opt-level = "s"
+lto = true

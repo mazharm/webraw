@@ -5,14 +5,9 @@ import {
   ProgressBar,
   Text,
   Badge,
-  Tooltip,
 } from '@fluentui/react-components';
 import {
   ArrowImportRegular,
-  StarRegular,
-  StarFilled,
-  CheckmarkCircleRegular,
-  DismissCircleRegular,
   FilterRegular,
 } from '@fluentui/react-icons';
 import { useLibraryStore } from '../../stores/libraryStore';

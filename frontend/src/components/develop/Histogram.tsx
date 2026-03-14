@@ -1,4 +1,4 @@
-import { tokens, Text } from '@fluentui/react-components';
+import { tokens } from '@fluentui/react-components';
 import { useRef, useEffect } from 'react';
 import type { HistogramData } from '../../types';
 

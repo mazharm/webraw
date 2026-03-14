@@ -1,8 +1,6 @@
 import {
   tokens,
   Text,
-  Button,
-  Tooltip,
 } from '@fluentui/react-components';
 import {
   StarFilled,

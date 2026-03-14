@@ -1,7 +1,6 @@
 import { tokens, Text, Spinner, MessageBar, MessageBarBody, Button } from '@fluentui/react-components';
 import { useEditStore } from '../../stores/editStore';
 import { useLibraryStore } from '../../stores/libraryStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { ImageCanvas } from './ImageCanvas';
 import { BasicPanel } from './panels/BasicPanel';
 import { ToneCurvePanel } from './panels/ToneCurvePanel';
@@ -11,7 +10,6 @@ import { OpticsPanel } from './panels/OpticsPanel';
 import { GeometryPanel } from './panels/GeometryPanel';
 import { EffectsPanel } from './panels/EffectsPanel';
 import { FilmSimPanel } from '../filmsim/FilmSimPanel';
-import { AutoEnhancePanel } from './panels/AutoEnhancePanel';
 import { AiEditPanel } from '../ai/AiEditPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { Histogram } from './Histogram';
@@ -21,7 +19,6 @@ export function DevelopView() {
   const editState = useEditStore(s => s.editState);
   const activeAssetId = useLibraryStore(s => s.activeAssetId);
   const activeAsset = useLibraryStore(s => s.assets.find(a => a.id === activeAssetId));
-  const backendHealthy = useSettingsStore(s => s.backendHealthy);
 
   const { previewUrl, histogram, isLoading, error, retry } = usePreviewRenderer(
     activeAsset?.fileId ?? null,
@@ -99,7 +96,6 @@ export function DevelopView() {
         flexShrink: 0,
       }}>
         <Histogram data={histogram} />
-        <AutoEnhancePanel />
         <BasicPanel />
         <ToneCurvePanel />
         <ColorPanel />

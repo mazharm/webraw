@@ -1,9 +1,7 @@
 import { FluentProvider, webLightTheme, webDarkTheme } from '@fluentui/react-components';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from './components/common/AppShell';
-import { useEffect, useState } from 'react';
-import { healthCheck } from './api/client';
-import { useSettingsStore } from './stores/settingsStore';
+import { useState } from 'react';
 import './App.css';
 
 const queryClient = new QueryClient({
@@ -17,21 +15,6 @@ const queryClient = new QueryClient({
 
 function App() {
   const [darkMode] = useState(true);
-  const setBackendHealthy = useSettingsStore(s => s.setBackendHealthy);
-
-  useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        await healthCheck();
-        setBackendHealthy(true);
-      } catch {
-        setBackendHealthy(false);
-      }
-    };
-    checkHealth();
-    const interval = setInterval(checkHealth, 15000);
-    return () => clearInterval(interval);
-  }, [setBackendHealthy]);
 
   return (
     <FluentProvider theme={darkMode ? webDarkTheme : webLightTheme} style={{ height: '100%' }}>

@@ -1,4 +1,4 @@
-import { tokens, Text } from '@fluentui/react-components';
+import { tokens } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import { useState, type ReactNode } from 'react';
 

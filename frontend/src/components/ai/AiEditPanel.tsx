@@ -13,7 +13,8 @@ import {
 import { useEditStore } from '../../stores/editStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useLibraryStore } from '../../stores/libraryStore';
-import { createAiEdit, pollJob, getFileUrl } from '../../api/client';
+import { renderPreview, createAiEdit } from '../../api/client';
+import { set } from 'idb-keyval';
 import { useState, useCallback } from 'react';
 import type { AiLayer } from '../../types';
 
@@ -35,9 +36,7 @@ export function AiEditPanel() {
   const [provider, setProvider] = useState<AiProvider>('gemini');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
 
-  // Resolve the API key based on provider
   const activeApiKey = provider === 'openai' ? openaiApiKey : geminiApiKey;
 
   const handleSubmit = useCallback(async () => {
@@ -45,48 +44,47 @@ export function AiEditPanel() {
 
     setIsSubmitting(true);
     setError(null);
-    setProgress(0);
 
     try {
-      const { jobId } = await createAiEdit(
-        activeAsset.fileId,
-        editState,
+      // Step 1: Render current edit state to a preview image via WASM
+      const preview = await renderPreview(activeAsset.fileId, editState, { maxEdge: 2048 });
+
+      // Step 2: Call AI provider directly from browser
+      const aiResult = await createAiEdit(
+        preview.imageBase64,
         prompt,
         mode,
         activeApiKey,
-        { provider },
+        { provider }
       );
 
-      const result = await pollJob(jobId, setProgress);
+      // Step 3: Store the AI result image in IndexedDB
+      const resultFileId = crypto.randomUUID();
+      await set(`file:${resultFileId}`, aiResult.imageData);
+      await set(`meta:${resultFileId}`, {
+        filename: `ai-${resultFileId}.png`,
+        size: aiResult.imageData.length,
+      });
 
-      if (result.status === 'FAILED') {
-        setError(result.error?.detail ?? 'AI edit failed');
-        return;
-      }
-
-      const meta = (result.result as any)?.meta;
-      const resultFileId = (result.result as any)?.resultFileId;
-
-      if (resultFileId) {
-        const layer: AiLayer = {
-          id: crypto.randomUUID(),
-          assetId: resultFileId,
-          opacity: 1.0,
-          blendMode: 'NORMAL',
-          meta: {
-            provider: meta?.provider ?? provider,
-            model: meta?.model ?? 'unknown',
-            prompt,
-            createdAt: new Date().toISOString(),
-          },
-          enabled: true,
-        };
-        addAiLayer(layer);
-        pushHistory(`AI: ${mode}`);
-        setPrompt('');
-      }
+      // Step 4: Add as AI layer
+      const layer: AiLayer = {
+        id: crypto.randomUUID(),
+        assetId: resultFileId,
+        opacity: 1.0,
+        blendMode: 'NORMAL',
+        meta: {
+          provider,
+          model: aiResult.model,
+          prompt,
+          createdAt: new Date().toISOString(),
+        },
+        enabled: true,
+      };
+      addAiLayer(layer);
+      pushHistory(`AI: ${mode}`);
+      setPrompt('');
     } catch (err: any) {
-      setError(err.detail ?? err.message ?? 'Request failed');
+      setError(err.message ?? 'AI edit failed');
     } finally {
       setIsSubmitting(false);
     }

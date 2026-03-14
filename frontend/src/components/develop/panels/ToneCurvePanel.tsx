@@ -1,8 +1,7 @@
 import { PanelSection } from '../../common/PanelSection';
-import { tokens, Select, Text } from '@fluentui/react-components';
+import { Select } from '@fluentui/react-components';
 import { useEditStore } from '../../../stores/editStore';
 import { useRef, useEffect, useCallback, useState } from 'react';
-import type { CurvePoint } from '../../../types';
 
 export function ToneCurvePanel() {
   const editState = useEditStore(s => s.editState);

@@ -6,7 +6,7 @@ interface Props {
   isLoading: boolean;
 }
 
-export function ImageCanvas({ previewUrl, isLoading }: Props) {
+export function ImageCanvas({ previewUrl, isLoading: _isLoading }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(1);

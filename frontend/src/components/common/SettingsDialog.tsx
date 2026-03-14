@@ -1,6 +1,5 @@
 import {
   Dialog,
-  DialogTrigger,
   DialogSurface,
   DialogTitle,
   DialogBody,
@@ -8,7 +7,6 @@ import {
   DialogActions,
   Button,
   Input,
-  Label,
   Switch,
   Select,
   Field,

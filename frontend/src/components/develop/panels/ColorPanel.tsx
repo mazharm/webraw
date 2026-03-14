@@ -1,6 +1,6 @@
 import { PanelSection } from '../../common/PanelSection';
 import { AdjustmentSlider } from '../../common/AdjustmentSlider';
-import { Select, Text, tokens } from '@fluentui/react-components';
+import { Text } from '@fluentui/react-components';
 import { useEditStore } from '../../../stores/editStore';
 import { useState } from 'react';
 import type { HslChannel } from '../../../types';

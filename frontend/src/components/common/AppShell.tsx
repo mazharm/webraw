@@ -15,7 +15,6 @@ import {
 } from '@fluentui/react-icons';
 import { useLibraryStore } from '../../stores/libraryStore';
 import { useEditStore } from '../../stores/editStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { LibraryView } from '../library/LibraryView';
 import { DevelopView } from '../develop/DevelopView';
 import { ExportDialog } from '../export/ExportDialog';
@@ -43,7 +42,6 @@ export function AppShell() {
   const addAssets = useLibraryStore(s => s.addAssets);
   const updateAsset = useLibraryStore(s => s.updateAsset);
   const setImportProgress = useLibraryStore(s => s.setImportProgress);
-  const backendHealthy = useSettingsStore(s => s.backendHealthy);
   const { undo, redo, canUndo, canRedo } = useEditStore();
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -179,15 +177,6 @@ export function AppShell() {
           aria-label="Settings"
         />
       </Toolbar>
-
-      {/* Backend offline banner */}
-      {!backendHealthy && (
-        <MessageBar intent="warning" style={{ flexShrink: 0 }}>
-          <MessageBarBody>
-            Backend service unavailable — some editing features are disabled.
-          </MessageBarBody>
-        </MessageBar>
-      )}
 
       {/* Import error banner */}
       {importError && (

@@ -7,15 +7,6 @@ import type {
   AiLayer,
   HslChannel,
   HslValues,
-  ToneCurve,
-  Sharpening,
-  Denoise,
-  Optics,
-  Effects,
-  Crop,
-  Transform,
-  ColorGrading,
-  History,
   HistoryNode,
   Snapshot,
 } from '../types';
@@ -228,10 +219,6 @@ export const useEditStore = create<EditStore>((set, get) => ({
       localAdjustments: editState.localAdjustments,
       aiLayers: editState.aiLayers,
       filmSim: editState.filmSim,
-      crop: editState.crop,
-      transform: editState.transform,
-      effects: editState.effects,
-      colorGrading: editState.colorGrading,
     };
     const newNode: HistoryNode = {
       id: newId,

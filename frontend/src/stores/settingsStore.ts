@@ -9,7 +9,6 @@ interface SettingsStore {
   redactPrompts: boolean;
   colorSpace: 'sRGB' | 'DisplayP3';
   stripLocationOnExport: boolean;
-  backendHealthy: boolean;
 
   setGeminiApiKey: (key: string | null) => void;
   setAnthropicApiKey: (key: string | null) => void;
@@ -18,7 +17,6 @@ interface SettingsStore {
   setRedactPrompts: (redact: boolean) => void;
   setColorSpace: (cs: 'sRGB' | 'DisplayP3') => void;
   setStripLocationOnExport: (strip: boolean) => void;
-  setBackendHealthy: (healthy: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -31,7 +29,6 @@ export const useSettingsStore = create<SettingsStore>()(
       redactPrompts: false,
       colorSpace: 'sRGB',
       stripLocationOnExport: true,
-      backendHealthy: false,
 
       setGeminiApiKey: (key) => set({ geminiApiKey: key }),
       setAnthropicApiKey: (key) => set({ anthropicApiKey: key }),
@@ -40,7 +37,6 @@ export const useSettingsStore = create<SettingsStore>()(
       setRedactPrompts: (redact) => set({ redactPrompts: redact }),
       setColorSpace: (cs) => set({ colorSpace: cs }),
       setStripLocationOnExport: (strip) => set({ stripLocationOnExport: strip }),
-      setBackendHealthy: (healthy) => set({ backendHealthy: healthy }),
     }),
     {
       name: 'webraw-settings',
@@ -52,7 +48,6 @@ export const useSettingsStore = create<SettingsStore>()(
         redactPrompts: state.redactPrompts,
         colorSpace: state.colorSpace,
         stripLocationOnExport: state.stripLocationOnExport,
-        // backendHealthy is intentionally excluded — ephemeral runtime state
       }),
     },
   ),

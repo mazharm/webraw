@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub fn load_image_meta(file_bytes: &[u8], filename: &str) -> Result<String, JsValue> {
-    let img = load_image(file_bytes).map_err(|e| JsValue::from_str(&e))?;
+    let img = load_image(file_bytes, filename).map_err(|e| JsValue::from_str(&e))?;
     let (w, h) = img.dimensions();
 
     let mut hasher = sha2::Sha256::new();
@@ -31,8 +31,8 @@ pub fn load_image_meta(file_bytes: &[u8], filename: &str) -> Result<String, JsVa
 }
 
 #[wasm_bindgen]
-pub fn generate_thumbnail(file_bytes: &[u8], _filename: &str, max_edge: u32) -> Result<Vec<u8>, JsValue> {
-    let img = load_image(file_bytes).map_err(|e| JsValue::from_str(&e))?;
+pub fn generate_thumbnail(file_bytes: &[u8], filename: &str, max_edge: u32) -> Result<Vec<u8>, JsValue> {
+    let img = load_image(file_bytes, filename).map_err(|e| JsValue::from_str(&e))?;
     let resized = resize_image(&img, max_edge);
     encode_jpeg(&resized, 85).map_err(|e| JsValue::from_str(&e))
 }
@@ -40,11 +40,11 @@ pub fn generate_thumbnail(file_bytes: &[u8], _filename: &str, max_edge: u32) -> 
 #[wasm_bindgen]
 pub fn render_preview(
     file_bytes: &[u8],
-    _filename: &str,
+    filename: &str,
     edit_state_json: &str,
     max_edge: u32,
 ) -> Result<String, JsValue> {
-    let img = load_image(file_bytes).map_err(|e| JsValue::from_str(&e))?;
+    let img = load_image(file_bytes, filename).map_err(|e| JsValue::from_str(&e))?;
     let resized = resize_image(&img, max_edge);
 
     let state: EditState = serde_json::from_str(edit_state_json)
@@ -73,10 +73,10 @@ pub fn render_preview(
 #[wasm_bindgen]
 pub fn render_base(
     file_bytes: &[u8],
-    _filename: &str,
+    filename: &str,
     max_edge: u32,
 ) -> Result<Vec<u8>, JsValue> {
-    let img = load_image(file_bytes).map_err(|e| JsValue::from_str(&e))?;
+    let img = load_image(file_bytes, filename).map_err(|e| JsValue::from_str(&e))?;
     let resized = resize_image(&img, max_edge);
     let rgba = resized.to_rgba8();
     Ok(rgba.into_raw())
@@ -85,14 +85,14 @@ pub fn render_base(
 #[wasm_bindgen]
 pub fn render_export(
     file_bytes: &[u8],
-    _filename: &str,
+    filename: &str,
     edit_state_json: &str,
     format: &str,
     quality: u32,
     _bit_depth: u32,
     _color_space: &str,
 ) -> Result<Vec<u8>, JsValue> {
-    let img = load_image(file_bytes).map_err(|e| JsValue::from_str(&e))?;
+    let img = load_image(file_bytes, filename).map_err(|e| JsValue::from_str(&e))?;
     // Export at full resolution — no resize
     let state: EditState = serde_json::from_str(edit_state_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid EditState JSON: {}", e)))?;
@@ -109,12 +109,20 @@ pub fn render_export(
 
 // ─── Image Loading ───────────────────────────────────────────
 
-fn load_image(data: &[u8]) -> Result<DynamicImage, String> {
-    // Try standard formats first (JPEG, PNG, TIFF)
+fn load_image(data: &[u8], filename: &str) -> Result<DynamicImage, String> {
+    // For known RAW extensions, try RAW decode first.
+    // DNG is TIFF-based — image::load_from_memory would misparse it as
+    // a regular TIFF (returning raw Bayer mosaic data as if it were RGB).
+    if is_raw_extension(filename) {
+        if let Ok(img) = load_raw_image(data) {
+            return Ok(img);
+        }
+    }
+    // Try standard formats (JPEG, PNG, TIFF)
     if let Ok(img) = image::load_from_memory(data) {
         return Ok(img);
     }
-    // Fall back to RAW decode
+    // Last resort: try RAW decode even if extension didn't match
     load_raw_image(data)
 }
 
